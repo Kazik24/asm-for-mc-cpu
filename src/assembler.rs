@@ -397,10 +397,11 @@ pub fn compile_assembly(source: &str) ->Result<Vec<Opcode>,String>{
             Some(sec) => vec![op.0,sec],
             None => vec![op.0]
         }
-    }).collect();
+    }).collect::<Vec<_>>();
     if !errors.is_empty() {
         return Err(errors.trim().to_string())
     }
+    assert_eq!(result.len(),current);
     Ok(result)
 }
 

@@ -1,8 +1,13 @@
 #![allow(unused)]
 #![deny(unsafe_code)]
-use crate::emulator::*;
+use crate::emulator::Opcode;
 use crate::vm::VirtualMachine;
 use crate::assembler::{compile_assembly, get_pos};
+use clap::*;
+use std::io::{Read, BufWriter, Write};
+use std::fs::{OpenOptions, File, read_to_string};
+use std::path::Path;
+use std::array::IntoIter;
 
 mod emulator;
 mod vm;
@@ -10,41 +15,72 @@ mod assembler;
 #[cfg(test)]
 mod tests;
 
+static INPUT: &str = "input";
+static OUTPUT: &str = "output";
+
 fn main() {
 
-    let text = r#"
-        nop ; must be at start cause core starts execution from word 1 (address 2)
-        LDI  r1,#32     ; start address (inclusive)
-        LDI  r2,#500   ; length
-        LDI  r3,#69     ; value to fill
-    Loop:
-        MOV  [r1],r3    ; write to memory at address
-        EQ   r4,r0,r2   ; check if length is 0
-        ADS  r2,r2,#-1  ; decrement length
-        ADS  r1,r1,#2   ; increase address by 2
-        JMPZ @Loop,r4     ; jump if condition was false
+    let args = App::new("Assembly compiler/emulator").version("0.1").author("Kazik24")
+        .arg(Arg::with_name(INPUT).short("i").value_name("FILE")
+		    .help("Input assembly text file to compile from, or standard input when not specified."))
+        .arg(Arg::with_name(OUTPUT).short("o").value_name("FILE")
+            .help(concat!("Output compiled file, when file with '.hex' extension is used then it will output ",
+            "text with hexadecimal opcode in each line, else default to output binary."))).get_matches();
+    let source = match args.value_of(INPUT) {
+        Some(file) => match read_to_string(Path::new(file)) {
+            Ok(s) => s,
+            Err(err) => {
+                println!("Error: cannot read source from file \"{}\": {}",file,err);
+                return;
+            }
+        }
+        None => {
+            let mut source = String::with_capacity(1024*32);
+            if let Err(err) = std::io::stdin().lock().read_to_string(&mut source) {
+                println!("Error: cannot read source from standard input: {}",err);
+                return;
+            }
+            source
+        }
+    };
+    let ops = match compile_assembly(&source) {
+        Ok(o) => o,
+        Err(err) => {
+            println!("{}",err);
+            return;
+        }
+    };
+    drop(source);
+    match args.value_of(OUTPUT) {
+        Some(output) => {
+            match write_opcodes(ops,Path::new(output)) {
+                Err(err) => {
+                    println!("Error: cannot write to file \"{}\": {}",output,err);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        None => {
+            println!("Info: No output file specified, compiled with no errors.");
+            return;
+        }
+    }
+    println!("Info: Compiled successfully.");
+}
 
-    Halt:
-        jmp @Halt
-    ;other code
-        mov r2,#10000
-    TestLoop:
-        ads r1,r1,#3
-        ads r2,r2,#1
-        jmp @TestLoop
-    "#;
-
-
-    let ops = compile_assembly(text).unwrap_or_else(|err|{
-        println!("{}",err);
-        Vec::new()
-    });
-    //println!("{:?}",ops);
-
-    let mut vm = VirtualMachine::new(1024*4);
-    vm.load_start(ops);
-    vm.tick_times(2048,false,false);
-    println!("{:#?}",vm.cpu());
-    println!("{}",vm.ram()[532]);
-
+fn write_opcodes(ops: Vec<Opcode>,path: &Path)->std::io::Result<()>{
+    let hex = path.extension().map(|s|s.to_string_lossy().into_owned()).as_deref() == Some("hex");
+    let mut file = OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
+    if hex {
+        let mut file = BufWriter::new(file);
+        for (i,op) in ops.into_iter().enumerate() {
+            if i != 0 {writeln!(file)?;}
+            write!(file,"{:04X}",op.bits())?;
+        }
+    }else{
+        let bytes = ops.into_iter().flat_map(|o|IntoIter::new(o.bits().to_le_bytes())).collect::<Vec<_>>();
+        file.write_all(&bytes)?;
+    }
+    Ok(())
 }

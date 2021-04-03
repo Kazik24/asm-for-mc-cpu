@@ -51,6 +51,7 @@ impl Opcode{
     pub fn r(self)->Arg { Arg::from_u16((self.bits >> 4) & 0xf).unwrap() }
     pub fn a(self)->Arg { Arg::from_u16((self.bits >> 8) & 0xf).unwrap() }
     pub fn b(self)->Arg { Arg::from_u16((self.bits >> 12) & 0xf).unwrap() }
+    pub fn bits(self)->u16{self.bits}
 }
 
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug)]
