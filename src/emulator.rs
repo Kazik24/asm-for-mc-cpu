@@ -10,7 +10,13 @@ pub struct Opcode{
 }
 impl Debug for Opcode{
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f,"{:04X}[{:?} r:{},a:{},b:{}]",self.bits,self.cmd(),self.r().as_u16(),self.a().as_u16(),self.b().as_u16())
+        write!(f,"{:04X}[{:?}",self.bits,self.cmd())?;
+        if self.cmd() == Command::Ex {
+            write!(f,".{:?} r:{},a:{}]",self.b_sub(),self.r().as_u16(),self.a().as_u16())
+        }else{
+            write!(f," r:{},a:{},b:{}]",self.r().as_u16(),self.a().as_u16(),self.b().as_u16())
+        }
+
     }
 }
 
@@ -23,7 +29,12 @@ impl From<Opcode> for u16 {
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug,FromPrimitive)]
 #[repr(u8)]
 pub enum Command{
-    Add = 0,Sub,Ads,And,Or,Xor,CmpEq,CmpNe,CmpLt,CmpGe,CmpLts,CmpGes,Movw,Cmov,Cmovb,Movx
+    Add = 0,Sub,Ads,And,Or,Xor,CmpEq,CmpNe,CmpLt,CmpGe,CmpLts,CmpGes,Movw,Cmov,Cmovb,Ex
+}
+#[derive(Copy,Clone,Eq,PartialEq,Hash,Debug,FromPrimitive)]
+#[repr(u8)]
+pub enum SubCommand{
+    Cldi = 0,Shr,Ashr,Shl,SetHLZ,SetHLS,SetLLZ,SetLLS,MLL,MLH,MHL,MHH,SetLHZ,SetHHZ,Not,Call
 }
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug,FromPrimitive)]
 #[repr(u8)]
@@ -51,6 +62,7 @@ impl Opcode{
     pub fn r(self)->Arg { Arg::from_u16((self.bits >> 4) & 0xf).unwrap() }
     pub fn a(self)->Arg { Arg::from_u16((self.bits >> 8) & 0xf).unwrap() }
     pub fn b(self)->Arg { Arg::from_u16((self.bits >> 12) & 0xf).unwrap() }
+    pub fn b_sub(self)->SubCommand { SubCommand::from_u16((self.bits >> 12) & 0xf).unwrap() }
     pub fn bits(self)->u16{self.bits}
 }
 
@@ -97,90 +109,107 @@ impl CpuModel{
         self.out_read = true;
         self.out_write = false;
     }
+    fn decode_opcode(&mut self)->(u16,u16){
+        self.decoded_opcode = Opcode::from(self.inout_data);
+        let a = self.reg[self.decoded_opcode.a().as_usize()];
+        let b = self.reg[self.decoded_opcode.b().as_usize()];
+        (a,b)
+    }
+    fn r_write(&mut self,value: u16){
+        self.reg[self.decoded_opcode.r().as_usize()] = value;
+    }
     pub fn tick(&mut self){
         use Command::*;
+        use SubCommand::*;
         self.reg[0] = 0; //r0 is hardwired to 0
+
+        //first multiplex
         match self.mux1 {
             Mux1::StateInc => self.reg[15] += 1, //increment program counter
             Mux1::StatePass => {}
         }
 
+
+        let alu_output;
+        let mut reg_write = true;
+
+        //second multiplex
         match self.mux2 {
             Mux2::StateDecode => {
-                self.decoded_opcode = Opcode::from(self.inout_data);
-                let a = self.reg[self.decoded_opcode.a().as_usize()];
-                let b = self.reg[self.decoded_opcode.b().as_usize()];
+                let (a,b) = self.decode_opcode();
                 match self.decoded_opcode.cmd() {
                     Add => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = a.wrapping_add(b);
+                        alu_output = a.wrapping_add(b);
                         self.mem_read_pc();
                     }
                     Sub => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = a.wrapping_sub(b);
+                        alu_output = a.wrapping_sub(b);
                         self.mem_read_pc();
                     }
                     Ads => {
                         let b = self.decoded_opcode.b().signext();
-                        self.reg[self.decoded_opcode.r().as_usize()] = a.wrapping_add(b);
+                        alu_output = a.wrapping_add(b);
                         self.mem_read_pc();
                     }
                     And => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = a & b;
+                        alu_output = a & b;
                         self.mem_read_pc();
                     }
                     Or => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = a | b;
+                        alu_output = a | b;
                         self.mem_read_pc();
                     }
                     Xor => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = a ^ b;
+                        alu_output = a ^ b;
                         self.mem_read_pc();
                     }
                     CmpEq => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = (a == b) as _;
+                        alu_output = (a == b) as _;
                         self.mem_read_pc();
                     }
                     CmpNe => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = (a != b) as _;
+                        alu_output = (a != b) as _;
                         self.mem_read_pc();
                     }
                     CmpLt => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = (a < b) as _;
+                        alu_output = (a < b) as _;
                         self.mem_read_pc();
                     }
                     CmpGe => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = (a >= b) as _;
+                        alu_output = (a >= b) as _;
                         self.mem_read_pc();
                     }
                     CmpLts => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = ((a as i16) < (b as i16)) as _;
+                        alu_output = ((a as i16) < (b as i16)) as _;
                         self.mem_read_pc();
                     }
                     CmpGes => {
-                        self.reg[self.decoded_opcode.r().as_usize()] = ((a as i16) >= (b as i16)) as _;
+                        alu_output = ((a as i16) >= (b as i16)) as _;
                         self.mem_read_pc();
                     }
                     Movw => {
+                        alu_output = 0;//dummy
                         self.out_address = a >> 1;
-                        self.mux1 = Mux1::StatePass;
-                        if self.decoded_opcode.r().as_u16() == 0 {
+                        self.mux1 = Mux1::StatePass; //2 cycles so don't increment pc in next tick
+                        if self.decoded_opcode.r().as_u16() == 0 { //decoded index points to void reg
                             self.inout_data = b;
                             self.out_read = false;
-                            self.out_write = true;
+                            self.out_write = true; //write ram
                             self.mux2 = Mux2::StateSkip;
                         }else{
-                            self.out_read = true;
+                            self.out_read = true; //read ram
                             self.out_write = false;
                             self.mux2 = Mux2::StateSaveToReg;
                         }
                     }
                     Cmov => {
-                        if b & 1 == 0 {
-                            self.reg[self.decoded_opcode.r().as_usize()] = a;
-                        }
+                        alu_output = a;
+                        reg_write = b & 1 == 0; //if not fulfilled then write to 0 (black hole register)
                         self.mem_read_pc();
                     }
                     Cmovb => {
+                        reg_write = false;//this po will self decode register
+                        alu_output = 0;//dummy value
                         let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
                         if b & 1 == 0 {
                             *r = (*r & 0xff00) | (a & 0x00ff);
@@ -189,76 +218,87 @@ impl CpuModel{
                         }
                         self.mem_read_pc();
                     }
-                    Movx => match self.decoded_opcode.b() {
-                        Arg::R0 => { //store conditional
+                    Ex => match self.decoded_opcode.b_sub() {
+                        Cldi => { //store conditional
+                            alu_output = 0;//<don't care> value
+                            reg_write = false;
                             self.mux2 = if a & 1 == 0 { Mux2::StateSaveToReg }else{ Mux2::StateSkip };
+                            //todo, currently works wrong (allways stores 0 in reg[r])
                             self.mem_read_pc();
                         }
-                        Arg::R1 => { //logic shr
-                            self.reg[self.decoded_opcode.r().as_usize()] = a >> 1;
+                        Shr => { //logic shr
+                            alu_output = a >> 1;
                             self.mem_read_pc();
                         }
-                        Arg::R2 => { //arithmetic shr
-                            self.reg[self.decoded_opcode.r().as_usize()] = ((a as i16) >> 1) as u16;
+                        Ashr => { //arithmetic shr
+                            alu_output = ((a as i16) >> 1) as u16;
                             self.mem_read_pc();
                         }
-                        Arg::R3 => { //logic shr
-                            self.reg[self.decoded_opcode.r().as_usize()] = a << 1;
+                        Shl => { //logic shl
+                            alu_output = a << 1;
                             self.mem_read_pc();
                         }
                         //byte mov with sign or zero extension
-                        Arg::R4 => {//set high to low zero extend
-                            self.reg[self.decoded_opcode.r().as_usize()] = a >> 8;
+                        SetHLZ => {//set high to low zero extend
+                            alu_output = a >> 8;
                             self.mem_read_pc();
                         }
-                        Arg::R5 => {//set high to low sign extended
-                            self.reg[self.decoded_opcode.r().as_usize()] = ((a as i16) >> 8) as u16;
+                        SetHLS => {//set high to low sign extended
+                            alu_output = ((a as i16) >> 8) as u16;
                             self.mem_read_pc();
                         }
-                        Arg::R6 => {//set low to low zero extend
-                            self.reg[self.decoded_opcode.r().as_usize()] = a & 0x00ff;
+                        SetLLZ => {//set low to low zero extend
+                            alu_output = a & 0x00ff;
                             self.mem_read_pc();
                         }
-                        Arg::R7 => {//set low to low sign extend
-                            self.reg[self.decoded_opcode.r().as_usize()] = ((a as i8) as i16) as u16;
+                        SetLLS => {//set low to low sign extend
+                            alu_output = ((a as i8) as i16) as u16;
                             self.mem_read_pc();
                         }
                         //byte manipulation
-                        Arg::R8 => {//reg[r][7:0] = reg[a][7:0]
+                        MLL => {//reg[r][7:0] = reg[a][7:0]
+                            alu_output = 0;//<don't care> value
+                            reg_write = false;//this op will self decode register
                             let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
                             *r = (*r & 0xff00) | (a & 0x00ff);
                             self.mem_read_pc();
                         }
-                        Arg::R9 => {//reg[r][15:8] = reg[a][7:0]
+                        MLH => {//reg[r][15:8] = reg[a][7:0]
+                            alu_output = 0;//<don't care> value
+                            reg_write = false;//this op will self decode register
                             let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
                             *r = (*r & 0x00ff) | (a << 8);
                             self.mem_read_pc();
                         }
-                        Arg::R10 => {//reg[r][7:0] = reg[a][15:8]
+                        MHL => {//reg[r][7:0] = reg[a][15:8]
+                            alu_output = 0;//<don't care> value
+                            reg_write = false;//this op will self decode register
                             let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
                             *r = (*r & 0xff00) | (a >> 8);
                             self.mem_read_pc();
                         }
-                        Arg::R11 => {//reg[r][15:8] = reg[a][15:8]
+                        MHH => {//reg[r][15:8] = reg[a][15:8]
+                            alu_output = 0;//<don't care> value
+                            reg_write = false;//this op will self decode register
                             let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
                             *r = (*r & 0x00ff) | (a & 0xff00);
                             self.mem_read_pc();
                         }
                         //utility
-                        Arg::R12 => {//logic shl 8
-                            self.reg[self.decoded_opcode.r().as_usize()] = a << 8;
+                        SetLHZ => {//logic shl 8
+                            alu_output = a << 8;
                             self.mem_read_pc();
                         }
-                        Arg::R13 => {// a & 0xff00
-                            self.reg[self.decoded_opcode.r().as_usize()] = a & 0xff00;
+                        SetHHZ => {// a & 0xff00
+                            alu_output = a & 0xff00;
                             self.mem_read_pc();
                         }
-                        Arg::R14 => {//negate
-                            self.reg[self.decoded_opcode.r().as_usize()] = !a;
+                        Not => {//negate
+                            alu_output = !a;
                             self.mem_read_pc();
                         }
-                        Arg::R15 => {//call link
-                            self.reg[self.decoded_opcode.r().as_usize()] = self.reg[15];
+                        Call => {//call link
+                            alu_output = self.reg[15];
                             self.reg[15] = a;
                             self.mem_read_pc();
                         }
@@ -266,21 +306,20 @@ impl CpuModel{
                     }
                     op => panic!("Unimplemented opcode: {:?}",op),
                 }
+                if reg_write {
+                    self.r_write(alu_output);
+                }
             }
             Mux2::StateSaveToReg => { //read data from ram
-                self.reg[self.decoded_opcode.r().as_usize()] = self.inout_data;
                 self.mux1 = Mux1::StateInc;
                 self.mux2 = Mux2::StateDecode;
-                self.out_read = true;
-                self.out_write = false;
-                self.out_address = self.reg[15];
+                self.r_write(self.inout_data);
+                self.mem_read_pc();
             }
             Mux2::StateSkip => {
                 self.mux1 = Mux1::StateInc;
                 self.mux2 = Mux2::StateDecode;
-                self.out_read = true;
-                self.out_write = false;
-                self.out_address = self.reg[15];
+                self.mem_read_pc();
             }
         }
 

@@ -7,3 +7,6 @@ edition = "2018"
 num-traits = "0.2.14"
 num-derive = "0.3.3"
 clap = "2.33.3"
+
+[dev-dependencies]
+rand = "0.8.3"

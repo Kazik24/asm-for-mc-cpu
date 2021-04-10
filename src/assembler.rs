@@ -5,7 +5,7 @@ use std::fmt::Write;
 use std::collections::HashMap;
 use std::array::IntoIter;
 
-const MAX_ADDRESS: usize = 2usize.pow(15) - 1;
+const MAX_ADDRESS: u32 = 2u32.pow(15) - 1;
 #[derive(Clone,Eq,PartialEq,Debug)]
 enum AsmArgument<'a>{
     Number(&'a str,Result<i32,ParseIntError>), //#1234, #-1234
@@ -52,10 +52,10 @@ fn command_stream(text: &str)->impl Iterator<Item=AsmCommand> {
             _ => (ch.as_str().parse().map_err(|_|())?,RegByte::All)
         })
     }
-    text.lines().map(|line|{
-            let s = line.trim_start();
-            s.find(';').map(|pos|&s[..pos]).unwrap_or(s).trim_end()
-        }).filter(|s|!s.is_empty()).map(|s|{
+    text.lines().flat_map(|line|{
+        let s = line.trim_start();
+        s.find(';').map(|pos|&s[..pos]).unwrap_or(s).trim_end().split_inclusive(':')//split by labels to parts
+    }).filter(|s|!s.is_empty()).map(|s|{
         if let Some(pos) = s.find(':') {
             let s = s[0..pos].trim();
             return if is_label(s) { AsmCommand::Label(s) }
@@ -129,18 +129,18 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
     use crate::emulator::{Command::*,Arg::*};
     fn byte_copy_replace(dst: u16,src: u16,bd: bool,bs: bool)->Opcode{
         match (bd,bs) {
-            (false,false) => Opcode::par(Movx,dst,src,8),
-            (true,false) => Opcode::par(Movx,dst,src,9),
-            (false,true) => Opcode::par(Movx,dst,src,10),
-            (true,true) => Opcode::par(Movx,dst,src,11),
+            (false,false) => Opcode::par(Ex, dst, src, 8),
+            (true,false) => Opcode::par(Ex, dst, src, 9),
+            (false,true) => Opcode::par(Ex, dst, src, 10),
+            (true,true) => Opcode::par(Ex, dst, src, 11),
         }
     }
     fn byte_copy_fill(dst: u16,src: u16,bd: bool,bs: bool,signext: bool)->Opcode{
         match (bd,bs) {
-            (false,false) => Opcode::par(Movx,dst,src,if signext { 7 } else { 6 }),
-            (true,false) => Opcode::par(Movx,dst,src,12),
-            (false,true) => Opcode::par(Movx,dst,src,if signext { 5 } else { 4 }),
-            (true,true) => Opcode::par(Movx,dst,src,13),
+            (false,false) => Opcode::par(Ex, dst, src, if signext { 7 } else { 6 }),
+            (true,false) => Opcode::par(Ex, dst, src, 12),
+            (false,true) => Opcode::par(Ex, dst, src, if signext { 5 } else { 4 }),
+            (true,true) => Opcode::par(Ex, dst, src, 13),
         }
     }
     fn mov(dst: (u16, RegByte), src: (u16, RegByte),signext: bool, func: impl FnOnce(u16,u16,bool,bool)->Opcode) ->Result<Precompiled<'static>,String>{
@@ -151,8 +151,8 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                 ((dst,High),(src,Low)) => Precompiled(func(dst,src,true,false), None, None),
                 ((dst,High),(src,High)) => Precompiled(func(dst,src,true,true), None, None),
                 ((dst,All),(src,All)) => Precompiled(Opcode::par(Or,dst,src,0), None, None),
-                ((dst,All),(src,Low)) => Precompiled(Opcode::par(Movx,dst,src,if signext { 7 } else { 6 }), None, None),
-                ((dst,All),(src,High)) => Precompiled(Opcode::par(Movx,dst,src,if signext { 5 } else { 4 }), None, None),
+                ((dst,All),(src,Low)) => Precompiled(Opcode::par(Ex, dst, src, if signext { 7 } else { 6 }), None, None),
+                ((dst,All),(src,High)) => Precompiled(Opcode::par(Ex, dst, src, if signext { 5 } else { 4 }), None, None),
                 ((dst,Low),(src,All)) => Precompiled(func(dst,src,false,false), None, None),
                 ((dst,High),(src,All)) => Precompiled(func(dst,src,true,false), None, None),
             })
@@ -172,8 +172,8 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                 _ => Err(("Expected value".to_string(), args)),
             }
         }
-        "add" => return opcode_regs!(args,3,Add), //todo user might accidentally halt cpu with ADD r0,r15,r15
-        "sub" => return opcode_regs!(args,3,Sub),
+        "add" => return opcode_regs!(args,3,Add),
+        "sub" => return opcode_regs!(args,3,Sub), //todo user might accidentally halt cpu with SUB r0,r15,r15
         "ads" => {
             return match args.as_slice() {
                 [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Number(_, Ok(val))]
@@ -206,10 +206,10 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
             return match args.as_slice() {
                 [Name(_, Ok((dst, All))), Number(_, Ok(val)), Name(_, Ok((cond, All)))] if *dst < 16 && *cond < 16 =>{
                     if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),vec![args[1].clone()])) }
-                    else { Ok(Precompiled(Opcode::par(Movx,*dst,*cond,0), Some(Opcode::from(*val as u16)), None)) }
+                    else { Ok(Precompiled(Opcode::par(Ex, *dst, *cond, 0), Some(Opcode::from(*val as u16)), None)) }
                 },
                 [Name(_, Ok((dst, All))), Label(lab), Name(_, Ok((cond, All)))]
-                if *dst < 16 && *cond < 16 => Ok(Precompiled(Opcode::par(Movx,*dst,*cond,0), None, Some(lab))),
+                if *dst < 16 && *cond < 16 => Ok(Precompiled(Opcode::par(Ex, *dst, *cond, 0), None, Some(lab))),
                 _ => Err(("Expected 2 full register names and 16-bit immediate".to_string(), args)),
             }
         },
@@ -217,15 +217,15 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
             return match args.as_slice() {
                 [Name(_, Ok((dst, All))), Number(_, Ok(val))] if *dst < 16 =>{
                     if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),vec![args[1].clone()])) }
-                    else { Ok(Precompiled(Opcode::par(Movx,*dst,0,0), Some(Opcode::from(*val as u16)), None)) }
+                    else { Ok(Precompiled(Opcode::par(Ex, *dst, 0, 0), Some(Opcode::from(*val as u16)), None)) }
                 },
-                [Name(_, Ok((dst, All))), Label(lab)] if *dst < 16 => Ok(Precompiled(Opcode::par(Movx,*dst,0,0), None, Some(lab))),
+                [Name(_, Ok((dst, All))), Label(lab)] if *dst < 16 => Ok(Precompiled(Opcode::par(Ex, *dst, 0, 0), None, Some(lab))),
                 _ => Err(("Expected 2 full register names and 16-bit immediate".to_string(), args)),
             }
         }
-        "shr" => return opcode_regs!(args,2,Movx,1),
-        "ashr" => return opcode_regs!(args,2,Movx,2),
-        "shl" => return opcode_regs!(args,2,Movx,3),
+        "shr" => return opcode_regs!(args,2,Ex,1),
+        "ashr" => return opcode_regs!(args,2,Ex,2),
+        "shl" => return opcode_regs!(args,2,Ex,3),
         "movz" => {
             return match args.as_slice() {
                 [Name(_, Ok(dst)), Name(_, Ok(src))] => mov(*dst, *src,false,|a,b,c,d|byte_copy_fill(a,b,c,d,false)).map_err(|s|(s, args)),
@@ -238,8 +238,8 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                 _ => Err(("Expected 2 register names".to_string(), args)),
             }
         }
-        "not" => return opcode_regs!(args,2,Movx,14),
-        "call" => return opcode_regs!(args,2,Movx,15),
+        "not" => return opcode_regs!(args,2,Ex,14),
+        "call" => return opcode_regs!(args,2,Ex,15),
         //common aliases
         "mov" => {
             return match args.as_slice() {
@@ -261,7 +261,7 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                             if val & 0xfff8 == 0xfff8 || val & 0xfff8 == 0 {
                                 Ok(Precompiled(Opcode::par(Ads,dst,0,(val & 0xf) as u16), None, None))
                             }else{
-                                Ok(Precompiled(Opcode::par(Movx,dst,0,0), Some(Opcode::from(val as u16)), None))
+                                Ok(Precompiled(Opcode::par(Ex, dst, 0, 0), Some(Opcode::from(val as u16)), None))
                             }
                         }
                     }
@@ -269,7 +269,7 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                     _ => Err(("Only full registers are allowed when loading immediate value".to_string(), args))
                 },
                 [Name(_, Ok(dst)), Label(lab)] => match (*dst,lab) {
-                    ((dst,All),lab) if dst < 16 => Ok(Precompiled(Opcode::par(Movx,dst,0,0), None, Some(lab))),
+                    ((dst,All),lab) if dst < 16 => Ok(Precompiled(Opcode::par(Ex, dst, 0, 0), None, Some(lab))),
                     ((_,All),_) => Err(("Allowed register are r0..r15".to_string(), args)),
                     _ => Err(("Only full registers are allowed when loading immediate value".to_string(), args))
                 },
@@ -279,10 +279,10 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
         "jmp" => {
             return match args.as_slice() {
                 [Name(_, Ok((src,All)))] if *src < 16 => Ok(Precompiled(Opcode::par(Or,15,*src,0), None, None)),
-                [Label(lab)] => Ok(Precompiled(Opcode::par(Movx,15,0,0), None, Some(lab))),
+                [Label(lab)] => Ok(Precompiled(Opcode::par(Ex, 15, 0, 0), None, Some(lab))),
                 [Number(_,Ok(val))] => {
                     if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),args)) }
-                    else { Ok(Precompiled(Opcode::par(Movx,15,0,0), Some(Opcode::from(*val as u16)), None)) }
+                    else { Ok(Precompiled(Opcode::par(Ex, 15, 0, 0), Some(Opcode::from(*val as u16)), None)) }
                 }
                 _ => Err(("Expected 1 full register name".to_string(), args)),
             }
@@ -292,17 +292,17 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                 [Name(_, Ok((src,All))),Name(_, Ok((cond,All)))] if *src < 16 && *cond < 16 =>
                     Ok(Precompiled(Opcode::par(Cmov,15,*src,*cond), None, None)),
                 [Label(lab),Name(_, Ok((cond,All)))] if *cond < 16 =>
-                    Ok(Precompiled(Opcode::par(Movx,15,*cond,0), None, Some(lab))),
+                    Ok(Precompiled(Opcode::par(Ex, 15, *cond, 0), None, Some(lab))),
                 [Number(_,Ok(val)),Name(_, Ok((cond,All)))] if *cond < 16 =>{
                     if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),args)) }
-                    else { Ok(Precompiled(Opcode::par(Movx,15,*cond,0), Some(Opcode::from(*val as u16)), None)) }
+                    else { Ok(Precompiled(Opcode::par(Ex, 15, *cond, 0), Some(Opcode::from(*val as u16)), None)) }
                 }
                 _ => Err(("Expected 1 full register name".to_string(), args)),
             }
         }
         "halt" => {
             if !args.is_empty() { return Err(("Expected no arguments".to_string(),args))}
-            return Ok(Precompiled(Opcode::par(Add,0,15,15),None,None));
+            return Ok(Precompiled(Opcode::par(Sub,0,15,15),None,None));
         }
         _ => return Err((format!("Unknown mnemonic {:?}",mnem),args)),
     }
@@ -401,7 +401,7 @@ pub fn compile_assembly(source: &str) ->Result<Vec<Opcode>,String>{
     if !errors.is_empty() {
         return Err(errors.trim().to_string())
     }
-    assert_eq!(result.len(),current);
+    assert_eq!(result.len(),current as _);
     Ok(result)
 }
 

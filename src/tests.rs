@@ -1,6 +1,7 @@
 use crate::*;
 use crate::assembler::*;
-
+use rand::{random, SeedableRng, Rng};
+use rand::rngs::StdRng;
 
 
 #[test]
@@ -36,7 +37,17 @@ fn test_compile(){
 
     let mut vm = VirtualMachine::new(1024*4);
     vm.load_start(ops);
-    vm.tick_times(2048,false,false);
+    vm.tick_times(2048,false,true);
     println!("{:#?}",vm.cpu());
     println!("{}",vm.ram()[532]);
+}
+
+#[test]
+fn random_test_assert(){
+    let mut rng = StdRng::seed_from_u64(4201);
+
+    let mut vm = VirtualMachine::new(1024*32);
+    rng.fill(vm.ram_mut());
+    vm.tick_times(10000,false,true);
+    println!("{:#?}",vm.cpu());
 }

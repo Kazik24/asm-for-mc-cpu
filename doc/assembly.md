@@ -1,5 +1,7 @@
 # Assembler Specification
 ___
+[Binary Instruction Representation](binary_opcodes.md)
+
 This section contains allowed opcodes that can be compiled from human-readable
 assembly into binary machine code for _BedrockCore_.
 ## Syntax
