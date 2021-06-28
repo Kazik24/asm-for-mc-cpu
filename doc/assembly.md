@@ -42,16 +42,22 @@ or memory index.
 * Von Neumann architecture (single shared memory for instructions and data).
 * Memory bus is 16-bit and memory address is 15-bit so maximum amount of memory is
   64 kB.
+* Machine word is 16-bit, most instructions are 1 word long. Some instructions also require
+  immediate 16-bit value for example for loading to register. Those instructions take 2 machine words.
 * Has 16 registers 16-bit each, named: r0, r1, ..., r14, r15
 * Register r0 is hard-wired to 0 and writing to it has no effect
-* Register r15 is program counter, writing or modifying it causes jump
+* Register r15 is program counter, writing or modifying it causes jump. This register is
+  incremented before executing each instruction so for example you can skip next instruction (1 word)
+  like this `ADS r15,r15,#1` - this will add 1 to program counter so that it will point to instruction
+  after next operation. Keep this in mind when doing relative jumps.
+* Registers r1, r2, ..., r13, r14 are for general purpose operations.
 * There is no status register, all comparison operations specify output register
   which is written to 1 or 0 depending on success or failure of comparison.
 * There is no branch/jump instruction, only conditional `MOV` and conditional
   load which can write value to register depending on lowest bit of condition
   register. It's supposed to be used when writing to r15 a.k.a. program counter.
-  Clever tricks with `ADS` are possible that allow to conditionally skip one
-  instruction.
+  Clever tricks with `ADD` are possible that allow to conditionally skip one
+  instruction (1 machine word).
 
 
 ## Instruction list
@@ -118,8 +124,9 @@ name e.g: `r1H` is higher byte of register 1 and `r2L` is lower byte of register
 * `NOT dst,src` - negate source register and write to destination register
 * `CALL dst,addr` - call link, save program counter pointing to instruction after this to destination register,
   and copy value of address register to program counter (jump with saved pc)
-* `HALT` - stop cpu and require user to restart it.
-
+* `HALT` - stop cpu and require external signal to restart it.
+* `RST` - reset all registers and cpu state to initial values.
+* `KILL` - kill cpu, this works as combined `HALT` and `RST`.
 
 
 Common aliases:

@@ -1,7 +1,7 @@
 
 use num_derive::*;
 use num_traits::FromPrimitive;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Formatter, Display};
 
 
 #[derive(Copy,Clone,Eq,PartialEq,Hash)]
@@ -19,7 +19,16 @@ impl Debug for Opcode{
 
     }
 }
-
+impl Display for Opcode{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f,"{:?}",self.cmd())?;
+        match self.cmd() {
+            Command::Ads => write!(f," {},{},#{}",self.r().name(),self.a().name(),self.b().signext() as i16),
+            Command::Ex => write!(f,".{:?} {},{}",self.b_sub(),self.r().name(),self.a().name()),
+            _ => write!(f," {},{},{}",self.r().name(),self.a().name(),self.b().name()),
+        }
+    }
+}
 impl From<u16> for Opcode{
     fn from(bits: u16) -> Self { Self{ bits } }
 }
@@ -29,12 +38,12 @@ impl From<Opcode> for u16 {
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug,FromPrimitive)]
 #[repr(u8)]
 pub enum Command{
-    Add = 0,Sub,Ads,And,Or,Xor,CmpEq,CmpNe,CmpLt,CmpGe,CmpLts,CmpGes,Movw,Cmov,Cmovb,Ex
+    Or = 0,And,Xor,Add,Ads,Sub,CmpLt,CmpGe,CmpLts,CmpGes,CmpEq,CmpNe,Movw,Cmov,Cmovb,Ex
 }
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug,FromPrimitive)]
 #[repr(u8)]
 pub enum SubCommand{
-    Cldi = 0,Shr,Ashr,Shl,SetHLZ,SetHLS,SetLLZ,SetLLS,MLL,MLH,MHL,MHH,SetLHZ,SetHHZ,Not,Call
+    Shr = 0,Ashr,Shl,Cldi,SetHLZ,SetHLS,SetLLZ,SetLLS,MLL,MLH,MHL,MHH,SetLHZ,SetHHZ,Not,Call
 }
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug,FromPrimitive)]
 #[repr(u8)]
@@ -46,6 +55,7 @@ impl Arg{
         let a = self.as_u16();
         if a & 0x8 != 0 { (a | 0xfff0) } else { a }
     }
+    pub fn name(self)->String { format!("{:?}",self).to_lowercase()}
     pub fn as_u16(self)->u16 { self as _ }
     pub fn as_usize(self)->usize { self as _ }
 }
@@ -58,12 +68,22 @@ impl Opcode{
         bits |= (b & 0xf) << 12;
         Self{ bits }
     }
+    pub fn ex(r: u16,a: u16,b: SubCommand)->Self{
+        Self::par(Command::Ex,r,a,b as u16)
+    }
     pub fn cmd(self)->Command { Command::from_u16(self.bits & 0xf).unwrap() }
     pub fn r(self)->Arg { Arg::from_u16((self.bits >> 4) & 0xf).unwrap() }
     pub fn a(self)->Arg { Arg::from_u16((self.bits >> 8) & 0xf).unwrap() }
     pub fn b(self)->Arg { Arg::from_u16((self.bits >> 12) & 0xf).unwrap() }
     pub fn b_sub(self)->SubCommand { SubCommand::from_u16((self.bits >> 12) & 0xf).unwrap() }
     pub fn bits(self)->u16{self.bits}
+    pub fn word_count(self)->usize{
+        match (self.cmd(),self.b_sub()) {
+            (Command::Ex,SubCommand::Cldi) => 2,
+            (Command::Ex,SubCommand::Call) => 2,
+            _ => 1,
+        }
+    }
 }
 
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug)]
@@ -71,9 +91,9 @@ impl Opcode{
 pub enum Mux1{ StateInc, StatePass }
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug)]
 #[repr(u8)]
-pub enum Mux2{ StateDecode, StateSaveToReg, StateSkip}
+pub enum Mux2{ StateDecode, StateSaveToReg(bool), StateSkip}
 
-#[derive(Clone,Debug)]
+#[derive(Clone,Eq,PartialEq,Hash,Debug)]
 pub struct CpuModel{
     pub reg: [u16;16],
     pub mux1: Mux1,
@@ -113,6 +133,9 @@ impl CpuModel{
         self.decoded_opcode = Opcode::from(self.inout_data);
         let a = self.reg[self.decoded_opcode.a().as_usize()];
         let b = self.reg[self.decoded_opcode.b().as_usize()];
+        if self.decoded_opcode.cmd() == Command::Ex {
+            return (a,self.reg[self.decoded_opcode.r().as_usize()]);
+        }
         (a,b)
     }
     fn r_write(&mut self,value: u16){
@@ -132,61 +155,24 @@ impl CpuModel{
 
         let alu_output;
         let mut reg_write = true;
-
+        let mut read_pc = true;
         //second multiplex
         match self.mux2 {
             Mux2::StateDecode => {
                 let (a,b) = self.decode_opcode();
                 match self.decoded_opcode.cmd() {
-                    Add => {
-                        alu_output = a.wrapping_add(b);
-                        self.mem_read_pc();
-                    }
-                    Sub => {
-                        alu_output = a.wrapping_sub(b);
-                        self.mem_read_pc();
-                    }
-                    Ads => {
-                        let b = self.decoded_opcode.b().signext();
-                        alu_output = a.wrapping_add(b);
-                        self.mem_read_pc();
-                    }
-                    And => {
-                        alu_output = a & b;
-                        self.mem_read_pc();
-                    }
-                    Or => {
-                        alu_output = a | b;
-                        self.mem_read_pc();
-                    }
-                    Xor => {
-                        alu_output = a ^ b;
-                        self.mem_read_pc();
-                    }
-                    CmpEq => {
-                        alu_output = (a == b) as _;
-                        self.mem_read_pc();
-                    }
-                    CmpNe => {
-                        alu_output = (a != b) as _;
-                        self.mem_read_pc();
-                    }
-                    CmpLt => {
-                        alu_output = (a < b) as _;
-                        self.mem_read_pc();
-                    }
-                    CmpGe => {
-                        alu_output = (a >= b) as _;
-                        self.mem_read_pc();
-                    }
-                    CmpLts => {
-                        alu_output = ((a as i16) < (b as i16)) as _;
-                        self.mem_read_pc();
-                    }
-                    CmpGes => {
-                        alu_output = ((a as i16) >= (b as i16)) as _;
-                        self.mem_read_pc();
-                    }
+                    And => alu_output = a & b,
+                    Or => alu_output = a | b,
+                    Xor => alu_output = a ^ b,
+                    Add => alu_output = a.wrapping_add(b),
+                    Ads => alu_output = a.wrapping_add(self.decoded_opcode.b().signext()),
+                    Sub => alu_output = a.wrapping_sub(b),
+                    CmpEq => alu_output = (a == b) as _,
+                    CmpNe => alu_output = (a != b) as _,
+                    CmpLt => alu_output = (a < b) as _,
+                    CmpGe => alu_output = (a >= b) as _,
+                    CmpLts => alu_output = ((a as i16) < (b as i16)) as _,
+                    CmpGes => alu_output = ((a as i16) >= (b as i16)) as _,
                     Movw => {
                         alu_output = 0;//dummy
                         self.out_address = a >> 1;
@@ -199,13 +185,13 @@ impl CpuModel{
                         }else{
                             self.out_read = true; //read ram
                             self.out_write = false;
-                            self.mux2 = Mux2::StateSaveToReg;
+                            self.mux2 = Mux2::StateSaveToReg(false);
                         }
+                        read_pc = false;
                     }
                     Cmov => {
                         alu_output = a;
                         reg_write = b & 1 == 0; //if not fulfilled then write to 0 (black hole register)
-                        self.mem_read_pc();
                     }
                     Cmovb => {
                         reg_write = false;//this po will self decode register
@@ -216,91 +202,34 @@ impl CpuModel{
                         }else{
                             *r = (*r & 0x00ff) | (a << 8);
                         }
-                        self.mem_read_pc();
                     }
                     Ex => match self.decoded_opcode.b_sub() {
                         Cldi => { //store conditional
                             alu_output = 0;//<don't care> value
                             reg_write = false;
-                            self.mux2 = if a & 1 == 0 { Mux2::StateSaveToReg }else{ Mux2::StateSkip };
-                            //todo, currently works wrong (allways stores 0 in reg[r])
-                            self.mem_read_pc();
+                            self.mux2 = if a & 1 == 0 { Mux2::StateSaveToReg(false) }else{ Mux2::StateSkip };
                         }
-                        Shr => { //logic shr
-                            alu_output = a >> 1;
-                            self.mem_read_pc();
-                        }
-                        Ashr => { //arithmetic shr
-                            alu_output = ((a as i16) >> 1) as u16;
-                            self.mem_read_pc();
-                        }
-                        Shl => { //logic shl
-                            alu_output = a << 1;
-                            self.mem_read_pc();
-                        }
+                        Shr => alu_output = a >> 1, //logic shr
+                        Ashr => alu_output = ((a as i16) >> 1) as u16, //arithmetic shr
+                        Shl => alu_output = a << 1, //logic shl
                         //byte mov with sign or zero extension
-                        SetHLZ => {//set high to low zero extend
-                            alu_output = a >> 8;
-                            self.mem_read_pc();
-                        }
-                        SetHLS => {//set high to low sign extended
-                            alu_output = ((a as i16) >> 8) as u16;
-                            self.mem_read_pc();
-                        }
-                        SetLLZ => {//set low to low zero extend
-                            alu_output = a & 0x00ff;
-                            self.mem_read_pc();
-                        }
-                        SetLLS => {//set low to low sign extend
-                            alu_output = ((a as i8) as i16) as u16;
-                            self.mem_read_pc();
-                        }
+                        SetHLZ => alu_output = a >> 8, //set high to low zero extend
+                        SetHLS => alu_output = ((a as i16) >> 8) as u16,//set high to low sign extended
+                        SetLLZ => alu_output = a & 0x00ff,//set low to low zero extend
+                        SetLLS => alu_output = ((a as i8) as i16) as u16,//set low to low sign extend
                         //byte manipulation
-                        MLL => {//reg[r][7:0] = reg[a][7:0]
-                            alu_output = 0;//<don't care> value
-                            reg_write = false;//this op will self decode register
-                            let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
-                            *r = (*r & 0xff00) | (a & 0x00ff);
-                            self.mem_read_pc();
-                        }
-                        MLH => {//reg[r][15:8] = reg[a][7:0]
-                            alu_output = 0;//<don't care> value
-                            reg_write = false;//this op will self decode register
-                            let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
-                            *r = (*r & 0x00ff) | (a << 8);
-                            self.mem_read_pc();
-                        }
-                        MHL => {//reg[r][7:0] = reg[a][15:8]
-                            alu_output = 0;//<don't care> value
-                            reg_write = false;//this op will self decode register
-                            let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
-                            *r = (*r & 0xff00) | (a >> 8);
-                            self.mem_read_pc();
-                        }
-                        MHH => {//reg[r][15:8] = reg[a][15:8]
-                            alu_output = 0;//<don't care> value
-                            reg_write = false;//this op will self decode register
-                            let r = &mut self.reg[self.decoded_opcode.r().as_usize()];
-                            *r = (*r & 0x00ff) | (a & 0xff00);
-                            self.mem_read_pc();
-                        }
+                        MLL => alu_output = (b & 0xff00) | (a & 0x00ff),//reg[r][7:0] = reg[a][7:0]
+                        MLH => alu_output = (b & 0x00ff) | (a << 8),//reg[r][15:8] = reg[a][7:0]
+                        MHL => alu_output = (b & 0xff00) | (a >> 8),//reg[r][7:0] = reg[a][15:8]
+                        MHH => alu_output = (b & 0x00ff) | (a & 0xff00),//reg[r][15:8] = reg[a][15:8]
                         //utility
-                        SetLHZ => {//logic shl 8
-                            alu_output = a << 8;
-                            self.mem_read_pc();
-                        }
-                        SetHHZ => {// a & 0xff00
-                            alu_output = a & 0xff00;
-                            self.mem_read_pc();
-                        }
-                        Not => {//negate
-                            alu_output = !a;
-                            self.mem_read_pc();
-                        }
+                        SetLHZ => alu_output = a << 8,//logic shl 8
+                        SetHHZ => alu_output = a & 0xff00,// a & 0xff00
+                        Not => alu_output = !a,//negate
                         Call => {//call link
-                            alu_output = self.reg[15];
-                            self.reg[15] = a;
-                            self.mem_read_pc();
+                            alu_output = 0;//<don't care> value
+                            reg_write = false;
+                            self.mux2 = if a & 1 == 0 { Mux2::StateSaveToReg(true) }else{ Mux2::StateSkip };
                         }
                         op => panic!("Unimplemented Movx variant: {:?}",op),
                     }
@@ -309,11 +238,21 @@ impl CpuModel{
                 if reg_write {
                     self.r_write(alu_output);
                 }
+                if read_pc {
+                    self.mem_read_pc();
+                }
             }
-            Mux2::StateSaveToReg => { //read data from ram
+            Mux2::StateSaveToReg(call) => { //read data from ram
                 self.mux1 = Mux1::StateInc;
                 self.mux2 = Mux2::StateDecode;
-                self.r_write(self.inout_data);
+                let to_write;
+                if call {
+                    to_write = self.reg[15];
+                    self.reg[15] = self.inout_data;
+                }else{
+                    to_write = self.inout_data;
+                }
+                self.r_write(to_write);
                 self.mem_read_pc();
             }
             Mux2::StateSkip => {

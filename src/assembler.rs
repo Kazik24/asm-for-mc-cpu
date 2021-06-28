@@ -1,4 +1,4 @@
-use crate::emulator::Opcode;
+use crate::emulator::{Opcode, SubCommand};
 use std::convert::TryFrom;
 use std::num::ParseIntError;
 use std::fmt::Write;
@@ -70,7 +70,11 @@ fn command_stream(text: &str)->impl Iterator<Item=AsmCommand> {
         let args = rest.split(',').map(|a|a.trim()).map(|a|{
             if a.starts_with('#') {
                 let n = &a['#'.len_utf8()..];
-                AsmArgument::Number(n,n.parse())
+                if n.starts_with("0x") {
+                    AsmArgument::Number(n,i32::from_str_radix(n["0x".len()..].to_lowercase().as_str(),16))
+                }else{
+                    AsmArgument::Number(n,n.parse())
+                }
             } else if a.starts_with('@') { AsmArgument::Label(&a['@'.len_utf8()..]) }
             else if a.starts_with('[') && a.ends_with(']'){
                 let n = a['['.len_utf8()..(a.len() - ']'.len_utf8())].trim();
@@ -129,18 +133,18 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
     use crate::emulator::{Command::*,Arg::*};
     fn byte_copy_replace(dst: u16,src: u16,bd: bool,bs: bool)->Opcode{
         match (bd,bs) {
-            (false,false) => Opcode::par(Ex, dst, src, 8),
-            (true,false) => Opcode::par(Ex, dst, src, 9),
-            (false,true) => Opcode::par(Ex, dst, src, 10),
-            (true,true) => Opcode::par(Ex, dst, src, 11),
+            (false,false) => Opcode::ex(dst, src, SubCommand::MLL),
+            (true,false) => Opcode::ex(dst, src, SubCommand::MLH),
+            (false,true) => Opcode::ex(dst, src, SubCommand::MHL),
+            (true,true) => Opcode::ex(dst, src, SubCommand::MHH),
         }
     }
     fn byte_copy_fill(dst: u16,src: u16,bd: bool,bs: bool,signext: bool)->Opcode{
         match (bd,bs) {
-            (false,false) => Opcode::par(Ex, dst, src, if signext { 7 } else { 6 }),
-            (true,false) => Opcode::par(Ex, dst, src, 12),
-            (false,true) => Opcode::par(Ex, dst, src, if signext { 5 } else { 4 }),
-            (true,true) => Opcode::par(Ex, dst, src, 13),
+            (false,false) => Opcode::ex(dst, src, if signext { SubCommand::SetLLS } else { SubCommand::SetLLZ }),
+            (true,false) => Opcode::ex(dst, src, SubCommand::SetLHZ),
+            (false,true) => Opcode::ex(dst, src, if signext { SubCommand::SetHLS } else { SubCommand::SetHLZ }),
+            (true,true) => Opcode::ex(dst, src, SubCommand::SetHHZ),
         }
     }
     fn mov(dst: (u16, RegByte), src: (u16, RegByte),signext: bool, func: impl FnOnce(u16,u16,bool,bool)->Opcode) ->Result<Precompiled<'static>,String>{
@@ -151,8 +155,8 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                 ((dst,High),(src,Low)) => Precompiled(func(dst,src,true,false), None, None),
                 ((dst,High),(src,High)) => Precompiled(func(dst,src,true,true), None, None),
                 ((dst,All),(src,All)) => Precompiled(Opcode::par(Or,dst,src,0), None, None),
-                ((dst,All),(src,Low)) => Precompiled(Opcode::par(Ex, dst, src, if signext { 7 } else { 6 }), None, None),
-                ((dst,All),(src,High)) => Precompiled(Opcode::par(Ex, dst, src, if signext { 5 } else { 4 }), None, None),
+                ((dst,All),(src,Low)) => Precompiled(Opcode::ex(dst, src, if signext { SubCommand::SetLLS } else { SubCommand::SetLLZ }), None, None),
+                ((dst,All),(src,High)) => Precompiled(Opcode::ex(dst, src, if signext { SubCommand::SetHLS } else { SubCommand::SetHLZ }), None, None),
                 ((dst,Low),(src,All)) => Precompiled(func(dst,src,false,false), None, None),
                 ((dst,High),(src,All)) => Precompiled(func(dst,src,true,false), None, None),
             })
@@ -160,151 +164,193 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
     }
     match mnem.to_lowercase().as_str() {
         "nop" => {
-            if !args.is_empty() { return Err(("Expected no arguments".to_string(),args))}
-            return Ok(Precompiled(Opcode::from(0),None,None));
+            if !args.is_empty() { return Err(("Expected no arguments".to_string(), args)) }
+            Ok(Precompiled(Opcode::from(0), None, None))
         }
         "dw" => {
-            return match args.as_slice() {
+            match args.as_slice() {
                 [Number(_, Ok(val))] => {
-                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Value {:?} out of range",val),args)) }
-                    else { Ok(Precompiled(Opcode::from(*val as u16), None, None)) }
+                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Value {} out of range", val), args)) } else { Ok(Precompiled(Opcode::from(*val as u16), None, None)) }
                 },
                 _ => Err(("Expected value".to_string(), args)),
             }
         }
-        "add" => return opcode_regs!(args,3,Add),
-        "sub" => return opcode_regs!(args,3,Sub), //todo user might accidentally halt cpu with SUB r0,r15,r15
+        "add" => {
+            match args.as_slice() {
+                [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Number(_, Ok(val))] => {
+                    if *dst < 16 && *arg1 < 16 && *val >= -8 && *val <= 7{
+                        Ok(Precompiled(Opcode::par(Ads, *dst, *arg1, *val as _), None, None))
+                    }else{
+                        Err(("Expected 2 full register names and immediate from range [-8,7]".to_string(),args))
+                    }
+                }
+                [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Name(_, Ok((arg2, All)))]
+                if *dst < 16 && *arg1 < 16 && *arg2 < 16 => Ok(Precompiled(Opcode::par(Add,*dst,*arg1,*arg2), None, None)),
+                _ => { Err(("Expected 3 full register names or 2 register name and immediate".to_string(),args)) }
+            }
+        }
+        "sub" => opcode_regs!(args,3,Sub),
         "ads" => {
-            return match args.as_slice() {
+            match args.as_slice() {
                 [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Number(_, Ok(val))]
-                if *dst < 16 && *arg1 < 16 && *val >= -8 && *val <= 7 => Ok(Precompiled(Opcode::par(Ads,*dst,*arg1,*val as _), None, None)),
+                if *dst < 16 && *arg1 < 16 && *val >= -8 && *val <= 7 => Ok(Precompiled(Opcode::par(Ads, *dst, *arg1, *val as _), None, None)),
                 _ => Err(("Expected 2 full register names and immediate from range [-8,7]".to_string(), args)),
             }
         }
-        "and" => return opcode_regs!(args,3,And),
-        "or" => return opcode_regs!(args,3,Or),
-        "xor" => return opcode_regs!(args,3,Xor),
-        "eq" => return opcode_regs!(args,3,CmpEq),
-        "ne" => return opcode_regs!(args,3,CmpNe),
-        "lt" => return opcode_regs!(args,3,CmpLt),
-        "gt" => return opcode_regs!(args,3 rev,CmpLt),
-        "le" => return opcode_regs!(args,3 rev,CmpGe),
-        "ge" => return opcode_regs!(args,3,CmpGe),
-        "lts" => return opcode_regs!(args,3,CmpLts),
-        "gts" => return opcode_regs!(args,3 rev,CmpLts),
-        "les" => return opcode_regs!(args,3 rev,CmpGes),
-        "ges" => return opcode_regs!(args,3,CmpGes),
-        "movw" => return match args.as_slice() {
+        "and" => opcode_regs!(args,3,And).map(|mut v|{
+            if v.0.r().as_u16() == 0 {
+                v.0 = Opcode::from(0); //replace by noop
+            }
+            v
+        }),
+        "or" => opcode_regs!(args,3,Or),
+        "xor" => opcode_regs!(args,3,Xor),
+        "eq" => opcode_regs!(args,3,CmpEq),
+        "ne" => opcode_regs!(args,3,CmpNe),
+        "lt" => opcode_regs!(args,3,CmpLt),
+        "gt" => opcode_regs!(args,3 rev,CmpLt),
+        "le" => opcode_regs!(args,3 rev,CmpGe),
+        "ge" => opcode_regs!(args,3,CmpGe),
+        "lts" => opcode_regs!(args,3,CmpLts),
+        "gts" => opcode_regs!(args,3 rev,CmpLts),
+        "les" => opcode_regs!(args,3 rev,CmpGes),
+        "ges" => opcode_regs!(args,3,CmpGes),
+        "movw" => match args.as_slice() {
             [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Name(_, Ok((arg2, All)))]
             | [Name(_, Ok((dst, All))), Index(_, Ok((arg1, All))), Name(_, Ok((arg2, All)))]
-            if *dst < 16 && *arg1 < 16 && *arg2 < 16 => Ok(Precompiled(Opcode::par(Movw,*dst,*arg1,*arg2), None, None)),
+            if *dst < 16 && *arg1 < 16 && *arg2 < 16 => Ok(Precompiled(Opcode::par(Movw, *dst, *arg1, *arg2), None, None)),
             _ => Err(("Expected 3 full register names".to_string(), args)),
         },
-        "cmov" => return opcode_regs!(args,3,Cmov),
-        "cmovb" => return opcode_regs!(args,3,Cmovb),
+        "cmov" => opcode_regs!(args,3,Cmov),
+        "cmovb" => opcode_regs!(args,3,Cmovb),
         "cldi" => {
-            return match args.as_slice() {
-                [Name(_, Ok((dst, All))), Number(_, Ok(val)), Name(_, Ok((cond, All)))] if *dst < 16 && *cond < 16 =>{
-                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),vec![args[1].clone()])) }
-                    else { Ok(Precompiled(Opcode::par(Ex, *dst, *cond, 0), Some(Opcode::from(*val as u16)), None)) }
+            match args.as_slice() {
+                [Name(_, Ok((dst, All))), Number(_, Ok(val)), Name(_, Ok((cond, All)))] if *dst < 16 && *cond < 16 => {
+                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {} out of range", val), vec![args[1].clone()])) } else { Ok(Precompiled(Opcode::ex(*dst, *cond, SubCommand::Cldi), Some(Opcode::from(*val as u16)), None)) }
                 },
                 [Name(_, Ok((dst, All))), Label(lab), Name(_, Ok((cond, All)))]
-                if *dst < 16 && *cond < 16 => Ok(Precompiled(Opcode::par(Ex, *dst, *cond, 0), None, Some(lab))),
+                if *dst < 16 && *cond < 16 => Ok(Precompiled(Opcode::ex(*dst, *cond, SubCommand::Cldi), None, Some(lab))),
                 _ => Err(("Expected 2 full register names and 16-bit immediate".to_string(), args)),
             }
         },
         "ldi" => {
-            return match args.as_slice() {
-                [Name(_, Ok((dst, All))), Number(_, Ok(val))] if *dst < 16 =>{
-                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),vec![args[1].clone()])) }
-                    else { Ok(Precompiled(Opcode::par(Ex, *dst, 0, 0), Some(Opcode::from(*val as u16)), None)) }
+            match args.as_slice() {
+                [Name(_, Ok((dst, All))), Number(_, Ok(val))] if *dst < 16 => {
+                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {} out of range", val), vec![args[1].clone()])) } else { Ok(Precompiled(Opcode::ex(*dst, 0, SubCommand::Cldi), Some(Opcode::from(*val as u16)), None)) }
                 },
-                [Name(_, Ok((dst, All))), Label(lab)] if *dst < 16 => Ok(Precompiled(Opcode::par(Ex, *dst, 0, 0), None, Some(lab))),
+                [Name(_, Ok((dst, All))), Label(lab)] if *dst < 16 => Ok(Precompiled(Opcode::ex(*dst, 0, SubCommand::Cldi), None, Some(lab))),
                 _ => Err(("Expected 2 full register names and 16-bit immediate".to_string(), args)),
             }
         }
-        "shr" => return opcode_regs!(args,2,Ex,1),
-        "ashr" => return opcode_regs!(args,2,Ex,2),
-        "shl" => return opcode_regs!(args,2,Ex,3),
+        "shr" => opcode_regs!(args,2,Ex,SubCommand::Shr as u16),
+        "ashr" => opcode_regs!(args,2,Ex,SubCommand::Ashr as u16),
+        "shl" => opcode_regs!(args,2,Ex,SubCommand::Shl as u16),
         "movz" => {
-            return match args.as_slice() {
-                [Name(_, Ok(dst)), Name(_, Ok(src))] => mov(*dst, *src,false,|a,b,c,d|byte_copy_fill(a,b,c,d,false)).map_err(|s|(s, args)),
+            match args.as_slice() {
+                [Name(_, Ok(dst)), Name(_, Ok(src))] => mov(*dst, *src, false, |a, b, c, d| byte_copy_fill(a, b, c, d, false)).map_err(|s| (s, args)),
                 _ => Err(("Expected 2 register names".to_string(), args)),
             }
         }
         "movs" => {
-            return match args.as_slice() {
-                [Name(_, Ok(dst)), Name(_, Ok(src))] => mov(*dst, *src,true,|a,b,c,d|byte_copy_fill(a,b,c,d,true)).map_err(|s|(s, args)),
+            match args.as_slice() {
+                [Name(_, Ok(dst)), Name(_, Ok(src))] => mov(*dst, *src, true, |a, b, c, d| byte_copy_fill(a, b, c, d, true)).map_err(|s| (s, args)),
                 _ => Err(("Expected 2 register names".to_string(), args)),
             }
         }
-        "not" => return opcode_regs!(args,2,Ex,14),
-        "call" => return opcode_regs!(args,2,Ex,15),
+        "not" => opcode_regs!(args,2,Ex,SubCommand::Not as u16),
+        "call" => {
+            match args.as_slice() {
+                [Name(_, Ok((dst, All))), Label(lab)] if *dst < 16 => Ok(Precompiled(Opcode::ex(*dst, 0,SubCommand::Call), None, Some(lab))),
+                [Name(_, Ok((dst, All))), Number(_, Ok(val))] if *dst < 16 => {
+                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {} out of range", val), args)) }
+                    else { Ok(Precompiled(Opcode::ex(*dst, 0, SubCommand::Call), Some(Opcode::from(*val as u16)), None)) }
+                }
+                _ => Err(("Expected register followed by label or immediate value".to_string(), args)),
+            }
+        }
+        "ccll" => {
+            match args.as_slice() {
+                [Name(_, Ok((dst, All))), Label(lab), Name(_, Ok((con, All)))] if *dst < 16 && *con < 16 => Ok(Precompiled(Opcode::ex(*dst, *con,SubCommand::Call), None, Some(lab))),
+                [Name(_, Ok((dst, All))), Number(_, Ok(val)), Name(_, Ok((con, All)))] if *dst < 16 && *con < 16 => {
+                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {} out of range", val), args)) }
+                    else { Ok(Precompiled(Opcode::ex(*dst, *con, SubCommand::Call), Some(Opcode::from(*val as u16)), None)) }
+                }
+                _ => Err(("Expected register followed by label or immediate value".to_string(), args)),
+            }
+        }
         //common aliases
         "mov" => {
-            return match args.as_slice() {
-                [Name(_, Ok(dst)), Name(_, Ok(src))] => mov(*dst, *src,false,byte_copy_replace).map_err(|s|(s, args)),
-                [Name(_, Ok(dst)), Index(_, Ok(src))] if dst.0 < 16 && src.0 < 16 => match (*dst,*src) {
-                    ((0,All),(_,All)) => Ok(Precompiled(Opcode::from(0), None, None)), //nop
-                    ((dst,All),(src,All)) => Ok(Precompiled(Opcode::par(Movw,dst,src,0), None, None)),
+            match args.as_slice() {
+                [Name(_, Ok(dst)), Name(_, Ok(src))] => mov(*dst, *src, false, byte_copy_replace).map_err(|s| (s, args)),
+                [Name(_, Ok(dst)), Index(_, Ok(src))] if dst.0 < 16 && src.0 < 16 => match (*dst, *src) {
+                    ((0, All), (_, All)) => Ok(Precompiled(Opcode::from(0), None, None)), //nop
+                    ((dst, All), (src, All)) => Ok(Precompiled(Opcode::par(Movw, dst, src, 0), None, None)),
                     _ => Err(("Only full registers are allowed when indexing memory".to_string(), args))
                 },
-                [Name(_, Ok(dst)), Index(_, Ok(src))] => Err(("Allowed register are r0..r15".to_string(),args)),
-                [Index(_, Ok(dst)), Name(_, Ok(src))] if dst.0 < 16 && src.0 < 16 => match (*dst,*src) {
-                    ((dst,All),(src,All)) => Ok(Precompiled(Opcode::par(Movw,0,dst,src), None, None)),
+                [Name(_, Ok(dst)), Index(_, Ok(src))] => Err(("Allowed register are r0..r15".to_string(), args)),
+                [Index(_, Ok(dst)), Name(_, Ok(src))] if dst.0 < 16 && src.0 < 16 => match (*dst, *src) {
+                    ((dst, All), (src, All)) => Ok(Precompiled(Opcode::par(Movw, 0, dst, src), None, None)),
                     _ => Err(("Only full registers are allowed when indexing memory".to_string(), args))
                 },
-                [Name(_, Ok(dst)), Number(_, Ok(val))] => match (*dst,*val) {
-                    ((dst,All),val) if dst < 16 => {
-                        if val > u16::MAX as _ || val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),vec![args[1].clone()])) }
-                        else {
+                [Name(_, Ok(dst)), Number(_, Ok(val))] => match (*dst, *val) {
+                    ((dst, All), val) if dst < 16 => {
+                        if val > u16::MAX as _ || val < i16::MIN as _ { Err((format!("Immediate {} out of range", val), vec![args[1].clone()])) } else {
                             if val & 0xfff8 == 0xfff8 || val & 0xfff8 == 0 {
-                                Ok(Precompiled(Opcode::par(Ads,dst,0,(val & 0xf) as u16), None, None))
-                            }else{
-                                Ok(Precompiled(Opcode::par(Ex, dst, 0, 0), Some(Opcode::from(val as u16)), None))
+                                Ok(Precompiled(Opcode::par(Ads, dst, 0, (val & 0xf) as u16), None, None))
+                            } else {
+                                Ok(Precompiled(Opcode::ex(dst, 0, SubCommand::Cldi), Some(Opcode::from(val as u16)), None))
                             }
                         }
                     }
-                    ((_,All),_) => Err(("Allowed register are r0..r15".to_string(), args)),
+                    ((_, All), _) => Err(("Allowed register are r0..r15".to_string(), args)),
                     _ => Err(("Only full registers are allowed when loading immediate value".to_string(), args))
                 },
-                [Name(_, Ok(dst)), Label(lab)] => match (*dst,lab) {
-                    ((dst,All),lab) if dst < 16 => Ok(Precompiled(Opcode::par(Ex, dst, 0, 0), None, Some(lab))),
-                    ((_,All),_) => Err(("Allowed register are r0..r15".to_string(), args)),
+                [Name(_, Ok(dst)), Label(lab)] => match (*dst, lab) {
+                    ((dst, All), lab) if dst < 16 => Ok(Precompiled(Opcode::ex(dst, 0, SubCommand::Cldi), None, Some(lab))),
+                    ((_, All), _) => Err(("Allowed register are r0..r15".to_string(), args)),
                     _ => Err(("Only full registers are allowed when loading immediate value".to_string(), args))
                 },
                 _ => Err(("Expected register/index followed by register/index/immediate/label".to_string(), args)),
             }
         }
         "jmp" => {
-            return match args.as_slice() {
-                [Name(_, Ok((src,All)))] if *src < 16 => Ok(Precompiled(Opcode::par(Or,15,*src,0), None, None)),
-                [Label(lab)] => Ok(Precompiled(Opcode::par(Ex, 15, 0, 0), None, Some(lab))),
-                [Number(_,Ok(val))] => {
-                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),args)) }
-                    else { Ok(Precompiled(Opcode::par(Ex, 15, 0, 0), Some(Opcode::from(*val as u16)), None)) }
+            match args.as_slice() {
+                [Name(_, Ok((src, All)))] if *src < 16 => Ok(Precompiled(Opcode::par(Or, 15, *src, 0), None, None)),
+                [Label(lab)] => Ok(Precompiled(Opcode::ex(15, 0, SubCommand::Cldi), None, Some(lab))),
+                [Number(_, Ok(val))] => {
+                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {} out of range", val), args)) } else { Ok(Precompiled(Opcode::ex(15, 0, SubCommand::Cldi), Some(Opcode::from(*val as u16)), None)) }
                 }
                 _ => Err(("Expected 1 full register name".to_string(), args)),
             }
         }
         "jmpz" => {
-            return match args.as_slice() {
-                [Name(_, Ok((src,All))),Name(_, Ok((cond,All)))] if *src < 16 && *cond < 16 =>
-                    Ok(Precompiled(Opcode::par(Cmov,15,*src,*cond), None, None)),
-                [Label(lab),Name(_, Ok((cond,All)))] if *cond < 16 =>
-                    Ok(Precompiled(Opcode::par(Ex, 15, *cond, 0), None, Some(lab))),
-                [Number(_,Ok(val)),Name(_, Ok((cond,All)))] if *cond < 16 =>{
-                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {:?} out of range",val),args)) }
-                    else { Ok(Precompiled(Opcode::par(Ex, 15, *cond, 0), Some(Opcode::from(*val as u16)), None)) }
+            match args.as_slice() {
+                [Name(_, Ok((src, All))), Name(_, Ok((cond, All)))] if *src < 16 && *cond < 16 =>
+                    Ok(Precompiled(Opcode::par(Cmov, 15, *src, *cond), None, None)),
+                [Label(lab), Name(_, Ok((cond, All)))] if *cond < 16 =>
+                    Ok(Precompiled(Opcode::ex(15, *cond, SubCommand::Cldi), None, Some(lab))),
+                [Number(_, Ok(val)), Name(_, Ok((cond, All)))] if *cond < 16 => {
+                    if *val > u16::MAX as _ || *val < i16::MIN as _ { Err((format!("Immediate {} out of range", val), args)) } else { Ok(Precompiled(Opcode::ex(15, *cond, SubCommand::Cldi), Some(Opcode::from(*val as u16)), None)) }
                 }
                 _ => Err(("Expected 1 full register name".to_string(), args)),
             }
         }
         "halt" => {
-            if !args.is_empty() { return Err(("Expected no arguments".to_string(),args))}
-            return Ok(Precompiled(Opcode::par(Sub,0,15,15),None,None));
+            if !args.is_empty() { return Err(("Expected no arguments".to_string(), args)) }
+            Ok(Precompiled(Opcode::par(And, 0, 15, 15), None, None))
         }
-        _ => return Err((format!("Unknown mnemonic {:?}",mnem),args)),
+        "kill" => {
+            if !args.is_empty() { return Err(("Expected no arguments".to_string(), args)) }
+            Ok(Precompiled(Opcode::par(And, 0, 14, 15), None, None))
+        }
+        "rst" => {
+            if !args.is_empty() { return Err(("Expected no arguments".to_string(), args)) }
+            Ok(Precompiled(Opcode::par(And, 0, 13, 15), None, None))
+        }
+        "clk" => { //set clock prescaler
+            todo!()
+        }
+        _ => Err((format!("Unknown mnemonic \"{}\"", mnem), args)),
     }
 }
 
@@ -313,7 +359,7 @@ fn format_error(err: (&str,usize,usize))->String{
     let mut errors = format!(" at: {}:{}",err.1,err.2);
     writeln!(errors);
     let num = format!("{}:",err.1);
-    let count = num.chars().count() + err.0[..err.2].chars().count();
+    let count = num.chars().count() + err.0.chars().take(err.2).count();
     writeln!(errors,"{}{}",num,err.0);
     write!(errors,"{}^"," ".repeat(count));
     errors
@@ -326,7 +372,7 @@ pub fn compile_assembly(source: &str) ->Result<Vec<Opcode>,String>{
         match c {
             AsmCommand::Cmd(name,args) => precompile_command(name,args).map_err(|mut e|{ e.1.push(AsmArgument::Unknown(name));e }),
             AsmCommand::Label(lab) => Ok(Precompiled(Opcode::from(0),None,Some(lab))),
-            AsmCommand::Error(err) => Err((format!("Syntax error: {:?}",err),vec![Unknown(err)])),
+            AsmCommand::Error(err) => Err((format!("Syntax error: {}",err),vec![Unknown(err)])),
         }
     }).filter_map(|op|{
         //format errors from parsing

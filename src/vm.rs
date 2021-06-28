@@ -1,5 +1,6 @@
 use crate::emulator::*;
 
+#[derive(Clone,Eq,PartialEq,Hash,Debug)]
 pub struct VirtualMachine{
     ram: Box<[u16]>,
     cpu: CpuModel
@@ -14,6 +15,11 @@ impl VirtualMachine{
             ram: vec![0;size].into_boxed_slice(),
             cpu: CpuModel::new(),
         }
+    }
+    pub fn with(ram_size: usize,start_data: impl IntoIterator<Item=Opcode>)->Self{
+        let mut v = Self::new(ram_size);
+        v.load_start(start_data);
+        v
     }
     pub fn ram(&self)->&[u16] {&self.ram}
     pub fn ram_mut(&mut self)->&mut [u16] {&mut self.ram}
@@ -36,11 +42,11 @@ impl VirtualMachine{
         match (self.cpu.out_read,self.cpu.out_write) {
             (true,false) => {
                 self.cpu.inout_data = self.ram.get(address).copied().unwrap_or(0);
-                if print_ram { println!("read  ram[{}]: {:>5}: {:?}",address,self.cpu.inout_data,Opcode::from(self.cpu.inout_data)); }
+                if print_ram { println!("read  ram[{}]: {:>5}: {:04X}[{}]",address,self.cpu.inout_data,self.cpu.inout_data,Opcode::from(self.cpu.inout_data)); }
             }
             (false,true) if address < self.ram.len() => {
                 self.ram[address] = self.cpu.inout_data;
-                if print_ram { println!("write ram[{}] ={:>5}: {:?}",address,self.cpu.inout_data,Opcode::from(self.cpu.inout_data)); }
+                if print_ram { println!("write ram[{}] ={:>5}: {:04X}[{}]",address,self.cpu.inout_data,self.cpu.inout_data,Opcode::from(self.cpu.inout_data)); }
             }
             (false,true) => {//write to non existing cell
                 if print_ram { println!("write ram[{}] not exist",address); }

@@ -2,31 +2,26 @@ use crate::*;
 use crate::assembler::*;
 use rand::{random, SeedableRng, Rng};
 use rand::rngs::StdRng;
+use std::mem::{size_of, size_of_val};
+use std::collections::{HashSet, BTreeSet};
 
 
 #[test]
 fn test_compile(){
     let text = r#"
         nop ; must be at start cause core starts execution from word 1 (address 2)
-        LDI  r1,#32     ; start address (inclusive)
-        LDI  r2,#500   ; length
-        LDI  r3,#69     ; value to fill
-    Loop:
-        MOV  [r1],r3    ; write to memory at address
-        EQ   r4,r0,r2   ; check if length is 0
-        ADS  r2,r2,#-1  ; decrement length
-        ADS  r1,r1,#2   ; increase address by 2
-        JMPZ @Loop,r4     ; jump if condition was false
+        jmp @Start
+        Func:
+            mov r1,#-1
+            jmp r14
 
-    Halt:
-        jmp @Halt
-    ;other code
-        mov r2,#10000
-    TestLoop:
-        ads r1,r1,#3
-        ads r2,r2,#1
-        jmp @TestLoop
-    "#;
+        Start:
+        call r14,@Func
+        mov r2,#-2
+
+
+
+        "#;
 
 
     let ops = compile_assembly(text).unwrap_or_else(|err|{
@@ -37,9 +32,62 @@ fn test_compile(){
 
     let mut vm = VirtualMachine::new(1024*4);
     vm.load_start(ops);
-    vm.tick_times(2048,false,true);
+    vm.tick_times(10,false,true);
     println!("{:#?}",vm.cpu());
     println!("{}",vm.ram()[532]);
+}
+
+#[test]
+fn test_compare(){
+
+
+    fn print_truth_table(){
+        fn v(b: bool)->&'static str{ if b {"1"} else {"0"}}
+        println!("***Truth table:");
+        println!("{:>3} {:>3} {:>3} {:>3}","res","av","bv","cv");
+        for av in [false,true].iter().copied() {
+            for bv in [false,true].iter().copied() {
+                for cv in [false,true].iter().copied() {
+                    let res = ((av && bv && !cv) || (!av && !bv && cv)) != cv; //expression
+                    println!("{:>3} {:>3} {:>3} {:>3}",v(res),v(av),v(bv),v(cv));
+                }
+            }
+        }
+    }
+    print_truth_table();
+    type Data = u8;
+
+    for a in Data::MIN..=Data::MAX {
+        for b in Data::MIN..=Data::MAX {
+
+            let (diff,carry) = a.overflowing_sub(b);
+            let s = {
+                let m = (1 << (size_of_val(&diff) * 8 - 1));
+                let av = a & m != 0;
+                let bv = (!b) & m != 0;
+                let cv = diff & m != 0;
+
+                // overflow flat xor sign
+                ((av && bv && !cv) || (!av && !bv && cv)) != cv
+            };
+            let zero = diff == 0;
+
+            let eq = zero;
+            let ne = !zero;
+            let lt = carry;
+            let ge = !carry;
+            let lts = s;
+            let ges = !s;
+
+            assert_eq!(a < b,lt,"Failed a < b {} {}",a,b);
+            assert_eq!(a >= b,ge,"Failed a >= b {} {}",a,b);
+            assert_eq!((a as i8) < (b as i8),lts,"Failed signed a < b {} {}",a as i8,b as i8);
+            assert_eq!((a as i8) >= (b as i8),ges,"Failed signed a >= b {} {}",a as i8,b as i8);
+            assert_eq!(a == b,eq,"Failed a == b {} {}",a,b);
+            assert_eq!(a != b,ne,"Failed a != b {} {}",a,b);
+        }
+    }
+    assert!(false);
 }
 
 #[test]
