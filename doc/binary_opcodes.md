@@ -8,10 +8,11 @@ values of specific bit fields in instruction.
 
 `MSB..........LSB`<br>
 `bbbbaaaarrrr0000` - OR		e.g mov = 0000aaaarrrr0100<br>
-`bbbbaaaarrrr0001` - AND		e.g zero register = 0000aaaarrrr0011<br>
-  * If r == 0 then HALT - 1111111100000001 - stop cpu
+`bbbbaaaarrrr0001` - AND		e.g zero register = 0000aaaarrrr0011, If r == 0 then<br>
+  * HALT - 1111111100000001 - stop cpu
   * KILL - 1111111000000001 - stop cpu and reset
-  * RST -  1111110100000001 - reset cpu
+  * RST -  1111110100000001 - reset cpu<br>
+
 `vvvvaaaarrrr0010` - XOR<br>
 `bbbbaaaarrrr0011` - ADS reg[r] = reg[a] + signext(v)  e.g load small signed values = vvvv0000rrrr0010<br>
 `bbbbaaaarrrr0100` - ADD reg[r] = reg[a] + reg[b] e.g mov = 0000aaaarrrr0000 or aaaa0000rrrr0000 nop = aaaabbbb00000000 <br>
