@@ -30,7 +30,7 @@ Specify input file `-i FILE`
 
 Specify output file `-o FILE`
 You can use file with extensions:
-* `.bin` to produce text file with binary representation of each instruction and comments, example shown below.
+* `.bit` to produce text file with binary representation of each instruction and comments, example shown below.
 ```text
 0000: 0000 0000 0000 0000    Or r0,r0,r0
 0001: 0011 0000 1000 1111    Ex.Cldi r8,r0
@@ -43,7 +43,7 @@ You can use file with extensions:
 
 Compiling some file:
 ```sh
-$ asm-for-mc-cpu -i my_file.asm -o compiled.bin
+$ asm-for-mc-cpu -i my_file.asm -o compiled.bit
 ```
 
 Run emulator window `-e NUMBER_OF_RAM_CELLS` will launch emulator window on compiled program with scrolable memory view,
