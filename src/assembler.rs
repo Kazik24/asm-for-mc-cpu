@@ -1,9 +1,7 @@
 use crate::emulator::{Opcode, SubCommand};
-use std::convert::TryFrom;
 use std::num::ParseIntError;
 use std::fmt::Write;
 use std::collections::HashMap;
-use std::array::IntoIter;
 
 const MAX_ADDRESS: u32 = 2u32.pow(15) - 1;
 #[derive(Clone,Eq,PartialEq,Debug)]
@@ -130,7 +128,7 @@ struct Precompiled<'a>(Opcode,Option<Opcode>,Option<&'a str>);
 fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Precompiled<'a>,(String,Vec<AsmArgument<'a>>)>{
     use AsmArgument::*;
     use RegByte::*;
-    use crate::emulator::{Command::*,Arg::*};
+    use crate::emulator::{Command::*};
     fn byte_copy_replace(dst: u16,src: u16,bd: bool,bs: bool)->Opcode{
         match (bd,bs) {
             (false,false) => Opcode::ex(dst, src, SubCommand::MLL),
@@ -287,7 +285,7 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                     ((dst, All), (src, All)) => Ok(Precompiled(Opcode::par(Movw, dst, src, 0), None, None)),
                     _ => Err(("Only full registers are allowed when indexing memory".to_string(), args))
                 },
-                [Name(_, Ok(dst)), Index(_, Ok(src))] => Err(("Allowed register are r0..r15".to_string(), args)),
+                [Name(_, Ok(_)), Index(_, Ok(_))] => Err(("Allowed register are r0..r15".to_string(), args)),
                 [Index(_, Ok(dst)), Name(_, Ok(src))] if dst.0 < 16 && src.0 < 16 => match (*dst, *src) {
                     ((dst, All), (src, All)) => Ok(Precompiled(Opcode::par(Movw, 0, dst, src), None, None)),
                     _ => Err(("Only full registers are allowed when indexing memory".to_string(), args))
@@ -357,11 +355,11 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
 
 fn format_error(err: (&str,usize,usize))->String{
     let mut errors = format!(" at: {}:{}",err.1,err.2);
-    writeln!(errors);
+    writeln!(errors).unwrap();
     let num = format!("{}:",err.1);
     let count = num.chars().count() + err.0.chars().take(err.2).count();
-    writeln!(errors,"{}{}",num,err.0);
-    write!(errors,"{}^"," ".repeat(count));
+    writeln!(errors,"{}{}",num,err.0).unwrap();
+    write!(errors,"{}^"," ".repeat(count)).unwrap();
     errors
 }
 
@@ -380,11 +378,11 @@ pub fn compile_assembly(source: &str) ->Result<Vec<Opcode>,String>{
             Ok(prec) => Some(prec),
             Err((text,args)) => {
                 let err = args.first().map(|a|get_pos(source,match a { Unknown(s) | Number(s,_) | Name(s,_) | Label(s) | Index(s,_) => s }));
-                write!(errors,"Syntax Error: {}",text);
+                write!(errors,"Syntax Error: {}",text).unwrap();
                 if let Some(pos) = err {
-                    writeln!(errors,"{}",format_error(pos));
+                    writeln!(errors,"{}",format_error(pos)).unwrap();
                 }else{
-                    writeln!(errors);
+                    writeln!(errors).unwrap();
                 }
                 None
             }
@@ -429,10 +427,10 @@ pub fn compile_assembly(source: &str) ->Result<Vec<Opcode>,String>{
         if let (None,Some(label)) = (op.1,op.2) {
             let address = labels.get(label).copied();
             return if address.is_none() {
-                writeln!(errors, "Link Error: Unknown label \"{}\"{}", label, format_error(get_pos(source, label)));
+                writeln!(errors, "Link Error: Unknown label \"{}\"{}", label, format_error(get_pos(source, label))).unwrap();
                 vec![]
             } else if address.unwrap() > MAX_ADDRESS {
-                writeln!(errors, "Link Error: Label out of max program bounds \"{}\"{}", label, format_error(get_pos(source, label)));
+                writeln!(errors, "Link Error: Label out of max program bounds \"{}\"{}", label, format_error(get_pos(source, label))).unwrap();
                 vec![]
             } else {
                 vec![op.0, Opcode::from(address.unwrap() as u16)]

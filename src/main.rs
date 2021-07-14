@@ -1,11 +1,11 @@
-#![allow(unused)]
+#![allow(dead_code)]
 #![deny(unsafe_code)]
 use crate::emulator::Opcode;
 use crate::vm::VirtualMachine;
-use crate::assembler::{compile_assembly, get_pos};
+use crate::assembler::compile_assembly;
 use clap::*;
 use std::io::{Read, BufWriter, Write};
-use std::fs::{OpenOptions, File, read_to_string};
+use std::fs::{OpenOptions, read_to_string};
 use std::path::Path;
 use std::array::IntoIter;
 use crate::gui::launch_emulator_gui;
@@ -22,10 +22,6 @@ static OUTPUT: &str = "output";
 static EMU: &str = "emulate";
 
 fn main() {
-    // let mut vm = VirtualMachine::new(128);
-    // vm.load_start_data(&[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]);
-    // vm.tick_times(10,false,false);
-    // launch_emulator_gui(vm);
 
     let args = App::new("Assembly compiler/emulator").version("0.1.0").author("Kazik24")
         .arg(Arg::with_name(INPUT).short("i").value_name("FILE")

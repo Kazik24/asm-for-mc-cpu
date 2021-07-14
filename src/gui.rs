@@ -2,49 +2,14 @@
 use druid::widget::*;
 use druid::*;
 use crate::vm::VirtualMachine;
-use std::fmt::Write;
-use druid::lens::{Field, Map};
-use druid::piet::*;
-use std::sync::Arc;
-use std::thread::spawn;
+use druid::lens::Map;
 use num_traits::Pow;
 use crate::emulator::Opcode;
 
 
 fn build_gui() -> impl Widget<GuiData> {
-    // The label text will be computed dynamically based on the current locale and count
-
-
-    // let w = ViewSwitcher::new(|d,v|{
-    //     println!("sdasdasd");
-    //     ()
-    // },|_,_,_|{
-    //     println!("ASDASD");
-    //     Box::new(Flex::row())
-    // });
     let w = RamView::new().controller(RamControl);
-
-
-    // let t1 = spawn(||Device::new().and_then(|mut device|{
-    //     let mut bmp = device.bitmap_target(100,100,1.0)?;
-    //     let mut ctx = bmp.render_context();
-    //     ctx.fill(Rect::new(0.0,0.0,100.0,100.0),&Color::PURPLE);
-    //     ctx.fill(Rect::new(10.0,10.0,90.0,90.0),&Color::GREEN);
-    //     ctx.finish();
-    //     drop(ctx);
-    //     bmp.to_image_buf(ImageFormat::RgbaPremul)
-    // }).unwrap());
-    // let t2 = spawn(||Device::new().and_then(|mut device|{
-    //     let mut bmp = device.bitmap_target(100,100,1.0)?;
-    //     let mut ctx = bmp.render_context();
-    //     ctx.fill(Rect::new(0.0,0.0,100.0,100.0),&Color::BLUE);
-    //     ctx.fill(Rect::new(10.0,10.0,90.0,90.0),&Color::OLIVE);
-    //     ctx.finish();
-    //     drop(ctx);
-    //     bmp.to_image_buf(ImageFormat::RgbaPremul)
-    // }).unwrap());
-
-    let btn = Button::new("Tick").on_click(|ctx,data: &mut GuiData,_|{
+    let btn = Button::new("Tick").on_click(|_,data: &mut GuiData,_|{
         data.vm.tick(false);
     });
 
@@ -58,32 +23,13 @@ fn build_gui() -> impl Widget<GuiData> {
         }).padding(5.0)));
     let right = Flex::column().main_axis_alignment(MainAxisAlignment::Start).cross_axis_alignment(CrossAxisAlignment::Start)
         .with_child(build_cpu_state_view().border(Color::BLUE,1.0))
-        .with_flex_child(btn.fix_width(150.0),1.0);//fix width wplywa na szerokosc calej kolumny
+        .with_flex_child(btn.fix_width(150.0),1.0);
     Flex::row().with_flex_child(left,1.0).with_child(right)
-    //Split::columns(left,right).draggable(true).min_size(W_CELL*5.0,200.0).solid_bar(true)
-    //Flex::row().with_flex_child(left,1.0).with_child(right)
-
-
-    // let text =
-    //     LocalizedString::new("hello-counter").with_arg("count", |data: &GuiData, _env| data.vm.ram().len().into());
-    // let label = Label::new(text).padding(5.0);
-    // let button = Button::new("increment")
-    //     .on_click(|_ctx, data, _env|{
-    //         let mut s = String::new();
-    //         for (key,val) in _env.get_all() {
-    //             writeln!(s,"Key: {:?} Val: {:?}",key,val);
-    //         }
-    //         print!("{}",s);
-    //     })
-    //     .padding(5.0);
-    // Flex::row().with_child(Flex::column().with_child(label).with_child(button))
-    //     .with_child(build_cpu_state_view().align_left())
-
 }
 
 struct RamControl;
 impl Controller<GuiData, RamView> for RamControl {
-    fn event(&mut self, child: &mut RamView, ctx: &mut EventCtx, event: &Event, data: &mut GuiData, env: &Env) {
+    fn event(&mut self, child: &mut RamView, _ctx: &mut EventCtx, event: &Event, data: &mut GuiData, _env: &Env) {
         match event {
             Event::Wheel(mouse) => {
                 if mouse.wheel_delta.y > 0.0 {
@@ -131,10 +77,10 @@ impl RamView{
     }
 
     fn label_for(index: usize,color: Color)->impl Widget<GuiData>{
-        let label = Label::dynamic(move |data: &GuiData,env|{
+        let label = Label::dynamic(move |data: &GuiData,_env|{
             data.vm.ram().get(index).map(|v|format!("{:04X}",v)).unwrap_or_else(||"--".to_string())
         });
-        Container::new(Align::centered(label).fix_size(W_CELL,H_CELL).background(Painter::new(move |ctx, data: &GuiData, env| {
+        Container::new(Align::centered(label).fix_size(W_CELL,H_CELL).background(Painter::new(move |ctx, data: &GuiData, _env| {
             if data.vm.cpu().reg[15] as usize == index {
                 let rect = ctx.size().to_rect();
                 ctx.fill(rect,&Color::grey(0.7));
@@ -158,7 +104,7 @@ impl RamView{
             let mut row = Flex::row();
             row.add_child(Align::centered(Label::new(format!("{:04X}",ram_index)))
                 .fix_size(W_CELL,H_CELL).background(if y % 2 == 0 { COL_ADR_EVEN } else { COL_ADR_ODD }));
-            for x in 0..width {
+            for _ in 0..width {
                 row.add_child(Self::label_for(ram_index,Color::grey(0.1)));
                 ram_index += 1;
             }
@@ -211,7 +157,6 @@ impl Widget<GuiData> for RamView{
         let width = ((ctx.size().width / W_CELL).floor() as i32 - 1).max(1);
         let height = ((ctx.size().height / H_CELL).floor() as i32 - 1).max(1);
         let width = 2.0.pow((width as f64).log2().floor()) as i32;
-        let new_size = (width,height);
         if old_data.ram_scroll != data.ram_scroll {
             let w = Self::create_layout(width as _,height as _,data.ram_scroll);
             self.view = WidgetPod::new(w).boxed();
@@ -260,16 +205,10 @@ pub fn launch_emulator_gui(vm: VirtualMachine){
     AppLauncher::with_window(main_window).launch(data).unwrap();
 }
 
-fn align_label<T>(mut lab: Label<T>)->Label<T>{
-    //lab.set_text_alignment(TextAlignment::Start);
-    lab
-}
 fn bits_view()->impl Widget<u16> {
     let lab = Label::new(|value: &u16, _env: &_| format!("{:04X}",value)).center().fix_width(W_CELL);
     let rect_size = 11.0;
     let bits = Painter::new(move|ctx,data:&u16,_|{
-        let size = ctx.size();
-        let width = size.width / 16.0;
         for i in 0..=15 {
             let bit = *data & (1<<(15-i)) != 0;
             let r = Rect::new(i as f64 *rect_size,0.0,(i+1) as f64 *rect_size,rect_size);
@@ -287,12 +226,12 @@ fn build_cpu_state_view() ->impl Widget<GuiData>{
     let mut labels = Flex::column();
     labels.add_child(Label::new("iv"));
     for i in 1..=14 {
-        labels.add_child(align_label(Label::new(format!("r{}", i))).align_left())
+        labels.add_child(Label::new(format!("r{}", i)).align_left())
     }
-    labels.add_child(align_label(Label::new("r15/pc ")).align_left());
+    labels.add_child(Label::new("r15/pc ").align_left());
     labels.set_cross_axis_alignment(CrossAxisAlignment::Start);
     let mut regs = Flex::column().with_child(bits_view().lens(
-        Map::new(|g: &GuiData|0,|g: &mut GuiData,v|{})));
+        Map::new(|_: &GuiData|0,|_: &mut GuiData,_|{})));
     for i in 1..=15 {
         let lens = Map::new(move |g: &GuiData|g.vm.cpu().reg[i],move |g: &mut GuiData,v|{g.vm.cpu_mut().reg[i] = v;});
         regs.add_child(bits_view().lens(lens));

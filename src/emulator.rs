@@ -53,7 +53,7 @@ pub enum Arg{
 impl Arg{
     pub fn signext(self)->u16 {
         let a = self.as_u16();
-        if a & 0x8 != 0 { (a | 0xfff0) } else { a }
+        if a & 0x8 != 0 { a | 0xfff0 } else { a }
     }
     pub fn name(self)->String { format!("{:?}",self).to_lowercase()}
     pub fn as_u16(self)->u16 { self as _ }
@@ -141,6 +141,7 @@ impl CpuModel{
     fn r_write(&mut self,value: u16){
         self.reg[self.decoded_opcode.r().as_usize()] = value;
     }
+    #[allow(unreachable_patterns)]
     pub fn tick(&mut self){
         use Command::*;
         use SubCommand::*;
