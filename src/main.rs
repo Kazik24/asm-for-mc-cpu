@@ -15,6 +15,7 @@ mod assembler;
 #[cfg(test)]
 mod tests;
 mod gui;
+mod clang;
 
 static INPUT: &str = "input";
 static OUTPUT: &str = "output";
