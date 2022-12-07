@@ -9,8 +9,14 @@ use crate::emulator::Opcode;
 
 fn build_gui() -> impl Widget<GuiData> {
     let w = RamView::new().controller(RamControl);
-    let btn = Button::new("Tick").on_click(|_,data: &mut GuiData,_|{
+    let tick_btn = Button::new("Tick").on_click(|_,data: &mut GuiData,_|{
         data.vm.tick(false);
+    });
+    let reset_cpu = Button::new("Reset CPU").on_click(|_,data: &mut GuiData,_|{
+        data.vm.cpu_mut().reset();
+    });
+    let reset_ram = Button::new("Reset RAM").on_click(|_,data: &mut GuiData,_|{
+        data.vm.reset_ram();
     });
 
     let left = Flex::column().main_axis_alignment(MainAxisAlignment::SpaceEvenly).cross_axis_alignment(CrossAxisAlignment::Start)
@@ -23,7 +29,9 @@ fn build_gui() -> impl Widget<GuiData> {
         }).padding(5.0)));
     let right = Flex::column().main_axis_alignment(MainAxisAlignment::Start).cross_axis_alignment(CrossAxisAlignment::Start)
         .with_child(build_cpu_state_view().border(Color::BLUE,1.0))
-        .with_flex_child(btn.fix_width(150.0),1.0);
+        .with_flex_child(tick_btn.fix_width(150.0),1.0)
+        .with_flex_child(reset_cpu.fix_width(150.0),1.0)
+        .with_flex_child(reset_ram.fix_width(150.0),1.0);
     Flex::row().with_flex_child(left,1.0).with_child(right)
 }
 

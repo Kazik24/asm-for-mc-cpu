@@ -6,12 +6,12 @@ This section contains allowed opcodes that can be compiled from human-readable
 assembly into binary machine code for _BedrockCore_.
 ## Syntax
 ### Mnemonics
-Mnemonics are names of instructions they are case insensitive.
+Mnemonics are names of instructions, they are case-insensitive.
 e.g `ADD`,`SUB`,`mov`.
 
 ### Labels
 Labels are case-sensitive and always starts from alphabetic character or "_". 
-They can mark specific address in code when followed by colon ":". If used in
+They can mark specific address in code when followed by a colon ":". If used in
 instruction (preceded by "@") it is converted to address of instruction
 immediately after the mark.
 ```
@@ -22,7 +22,7 @@ SomeLabel:              ; define label name here
 ```
 
 ### Immediate values and pointers
-Sometimes we need supply opcode argument as immediate value, register number,
+Sometimes we need to supply opcode argument as immediate value, register number,
 or memory index.
 ```
     MOV  r1,r2          ; move value from register 2 to register 1

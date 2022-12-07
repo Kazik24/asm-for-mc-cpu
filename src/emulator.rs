@@ -103,6 +103,7 @@ pub struct CpuModel{
     pub out_address: u16,
     pub out_read: bool,
     pub out_write: bool,
+    pub halt: bool,
 }
 
 
@@ -117,7 +118,8 @@ impl CpuModel{
             decoded_opcode: Opcode::from(0),
             out_address: 1, //start from address 1
             out_read: true,
-            out_write: false
+            out_write: false,
+            halt: false,
         };
         v.reg[15] = 1;
         v
@@ -160,6 +162,17 @@ impl CpuModel{
         //second multiplex
         match self.mux2 {
             Mux2::StateDecode => {
+                if self.decoded_opcode == Opcode::par(And, 0, 15, 15) { //halt
+                    self.halt = true;
+                    return;
+                }else if self.decoded_opcode == Opcode::par(And, 0, 15, 15) { //kill
+                    *self = Self::new();
+                    self.halt = true;
+                    return;
+                }else if self.decoded_opcode == Opcode::par(And, 0, 13, 15) { //rst
+                    *self = Self::new();
+                    return;
+                }
                 let (a,b) = self.decode_opcode();
                 match self.decoded_opcode.cmd() {
                     And => alu_output = a & b,

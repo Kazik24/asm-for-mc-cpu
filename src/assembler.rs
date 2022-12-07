@@ -184,10 +184,23 @@ fn precompile_command<'a>(mnem: &'a str,args: Vec<AsmArgument<'a>>)->Result<Prec
                 }
                 [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Name(_, Ok((arg2, All)))]
                 if *dst < 16 && *arg1 < 16 && *arg2 < 16 => Ok(Precompiled(Opcode::par(Add,*dst,*arg1,*arg2), None, None)),
-                _ => { Err(("Expected 3 full register names or 2 register name and immediate".to_string(),args)) }
+                _ => { Err(("Expected 3 full register names or 2 register names and immediate".to_string(),args)) }
             }
         }
-        "sub" => opcode_regs!(args,3,Sub),
+        "sub" => {
+            match args.as_slice() {
+                [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Number(_, Ok(val))] => {
+                    if *dst < 16 && *arg1 < 16 && *val >= -7 && *val <= 8{
+                        Ok(Precompiled(Opcode::par(Ads, *dst, *arg1, (-*val) as _), None, None))
+                    }else{
+                        Err(("Expected 2 full register names and immediate from range [-7,8]".to_string(),args))
+                    }
+                }
+                [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Name(_, Ok((arg2, All)))]
+                if *dst < 16 && *arg1 < 16 && *arg2 < 16 => Ok(Precompiled(Opcode::par(Sub,*dst,*arg1,*arg2), None, None)),
+                _ => { Err(("Expected 3 full register names or 2 register names and immediate".to_string(),args)) }
+            }
+        }
         "ads" => {
             match args.as_slice() {
                 [Name(_, Ok((dst, All))), Name(_, Ok((arg1, All))), Number(_, Ok(val))]

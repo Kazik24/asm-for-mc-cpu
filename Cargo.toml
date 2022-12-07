@@ -6,7 +6,9 @@ edition = "2018"
 [dependencies]
 num-traits = "0.2.14"
 num-derive = "0.3.3"
+parking_lot = "0.12.1"
 clap = "2.33.3"
+lazy_static = "1.4.0"
 druid = "0.7.0"
 
 

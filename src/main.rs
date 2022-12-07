@@ -7,7 +7,6 @@ use clap::*;
 use std::io::{Read, BufWriter, Write};
 use std::fs::{OpenOptions, read_to_string};
 use std::path::Path;
-use std::array::IntoIter;
 use crate::gui::launch_emulator_gui;
 
 mod emulator;
@@ -22,7 +21,6 @@ static OUTPUT: &str = "output";
 static EMU: &str = "emulate";
 
 fn main() {
-
     let args = App::new("Assembly compiler/emulator").version("0.1.0").author("Kazik24")
         .arg(Arg::with_name(INPUT).short("i").value_name("FILE")
 		    .help("Input assembly text file to compile from, or standard input when not specified."))
@@ -113,7 +111,7 @@ fn write_opcodes(ops: &[Opcode],path: &Path,comment: bool, count: bool)->std::io
             }
         }
         _ => {
-            let bytes = ops.iter().copied().flat_map(|o|IntoIter::new(o.bits().to_le_bytes())).collect::<Vec<_>>();
+            let bytes = ops.iter().copied().flat_map(|o|o.bits().to_le_bytes()).collect::<Vec<_>>();
             file.write_all(&bytes)?;
         }
     }
