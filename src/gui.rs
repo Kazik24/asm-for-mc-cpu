@@ -4,7 +4,7 @@ use druid::*;
 use crate::vm::VirtualMachine;
 use druid::lens::Map;
 use num_traits::Pow;
-use crate::emulator::Opcode;
+use crate::emulator::{Opcode, Command, SubCommand, Mux2};
 
 
 fn build_gui() -> impl Widget<GuiData> {
@@ -60,6 +60,12 @@ const W_CELL: f64 = 40.0;
 const H_CELL: f64 = 24.0;
 const COL_ADR_EVEN: Color = Color::GRAY;
 const COL_ADR_ODD: Color = Color::MAROON;
+const COL_EX_INSTR: Color = Color::from_rgba32_u32(0xa8a8a8ff);
+const COL_RAM_INSTR: Color = Color::from_rgba32_u32(0x1FE03Cff);
+const COL_RAM_READ: Color = Color::from_rgba32_u32(0x0022FFff);
+const COL_RAM_WRITE: Color = Color::from_rgba32_u32(0xFFDD00ff);
+const COL_CLDI_INSTR: Color = Color::from_rgba32_u32(0xE01FC3ff);
+const COL_CALL_INSTR: Color = Color::from_rgba32_u32(0xE3881Cff);
 
 fn hex_digits_for(value: usize)->usize{
     if value == 0 { return 1; }
@@ -89,9 +95,50 @@ impl RamView{
             data.vm.ram().get(index).map(|v|format!("{:04X}",v)).unwrap_or_else(||"--".to_string())
         });
         Container::new(Align::centered(label).fix_size(W_CELL,H_CELL).background(Painter::new(move |ctx, data: &GuiData, _env| {
-            if data.vm.cpu().reg[15] as usize == index {
-                let rect = ctx.size().to_rect();
-                ctx.fill(rect,&Color::grey(0.7));
+            let cpu = data.vm.cpu();
+            let pc = cpu.reg[15] as usize;
+            let address = cpu.out_address as usize;
+            let rect = ctx.size().to_rect();
+            match cpu.decoded_opcode.cmd() {
+                Command::Movw if pc != address => {
+                    if index == pc.saturating_sub(1) {
+                        ctx.fill(rect, &COL_RAM_INSTR);
+                    } else if index == address {
+                        if cpu.out_read {
+                            ctx.fill(rect, &COL_RAM_READ);
+                        } else if cpu.out_write {
+                            ctx.fill(rect, &COL_RAM_WRITE);
+                        }
+                    }
+                }
+                Command::Ex if cpu.decoded_opcode.b_sub() == SubCommand::Cldi && (cpu.mux2 == Mux2::StateSaveToReg(false) || cpu.mux2 == Mux2::StateSkip) => {
+                    if index == pc {
+                        if cpu.mux2 == Mux2::StateSkip {
+                            ctx.fill(rect, &COL_EX_INSTR);
+                        }else{
+                            ctx.fill(rect, &COL_RAM_READ);
+                        }
+                    }
+                    if index == pc.saturating_sub(1) {
+                        ctx.fill(rect, &COL_CLDI_INSTR);
+                    }
+                }
+                Command::Ex if cpu.decoded_opcode.b_sub() == SubCommand::Call && (cpu.mux2 == Mux2::StateSaveToReg(true) || cpu.mux2 == Mux2::StateSkip) => {
+                    if index == pc {
+                        if cpu.mux2 == Mux2::StateSkip {
+                            ctx.fill(rect, &COL_EX_INSTR);
+                        }else{
+                            ctx.fill(rect, &COL_RAM_READ);
+                        }
+                    }
+                    if index == pc.saturating_sub(1) {
+                        ctx.fill(rect, &COL_CALL_INSTR);
+                    }
+                }
+                _ if pc == index => {
+                    ctx.fill(rect,&COL_EX_INSTR);
+                }
+                _ => {}
             }
         }))).background(color)
     }

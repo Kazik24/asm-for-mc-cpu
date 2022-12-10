@@ -89,18 +89,13 @@ mod tests{
     use rand::{SeedableRng, Rng};
     use std::cmp::Ordering;
 
-    #[test]
-    fn test_quicksort(){
 
-        let start_cell = 200;
-        let end_cell = 400;
-
-        let text = format!("
+    const QUICKSORT: &str = "
             nop
 
 
-            mov r1,#{} ;start address (inclusive)
-            mov r2,#{} ;end address (inclusive)
+            mov r1,#{start} ;start address (inclusive)
+            mov r2,#{end} ;end address (inclusive)
 
 
             mov r13,#0x1FFE ;stack pointer
@@ -163,9 +158,26 @@ mod tests{
             ;pop address and return
             add  r13,r13,#2
             mov  r15,[r13] ;ret
-        ", start_cell*2,end_cell*2);
+        ";
+
+    #[test]
+    fn test_quicksort(){
+
+        let start_cell = 200;
+        let end_cell = 400;
+
+        let data_range = start_cell..end_cell;
+
+        let text = QUICKSORT.replace("{start}",(data_range.start*2).to_string().as_str())
+            .replace("{end}",(data_range.end*2).to_string().as_str());
+
 
         let opcodes = compile_assembly(&text).unwrap();
+        let mut m = VirtualMachine::new(500);
+        m.load_start(opcodes.clone());
+        let array = &mut m.ram_mut()[data_range.clone()];
+        StdRng::seed_from_u64(1234).fill(array);
+        launch_emulator_gui(m);
 
 
         let data_range = start_cell..end_cell;
