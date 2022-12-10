@@ -173,12 +173,6 @@ mod tests{
 
 
         let opcodes = compile_assembly(&text).unwrap();
-        let mut m = VirtualMachine::new(500);
-        m.load_start(opcodes.clone());
-        let array = &mut m.ram_mut()[data_range.clone()];
-        StdRng::seed_from_u64(1234).fill(array);
-        launch_emulator_gui(m);
-
 
         let data_range = start_cell..end_cell;
         let mut rand = StdRng::seed_from_u64(1234);
@@ -200,5 +194,25 @@ mod tests{
                 w[0].partial_cmp(&w[1]).map(|o| o != Ordering::Greater).unwrap_or(false)
             }));
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_emulator_view(){
+        let start_cell = 200;
+        let end_cell = 400;
+
+        let data_range = start_cell..end_cell;
+
+        let text = QUICKSORT.replace("{start}",(data_range.start*2).to_string().as_str())
+            .replace("{end}",(data_range.end*2).to_string().as_str());
+
+
+        let opcodes = compile_assembly(&text).unwrap();
+        let mut m = VirtualMachine::new(420);
+        m.load_start(opcodes.clone());
+        let array = &mut m.ram_mut()[data_range.clone()];
+        StdRng::seed_from_u64(1234).fill(array);
+        launch_emulator_gui(m);
     }
 }

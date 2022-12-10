@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(unused)]
 #![deny(unsafe_code)]
 use crate::emulator::Opcode;
 use crate::vm::VirtualMachine;
