@@ -262,15 +262,31 @@ pub fn launch_emulator_gui(vm: VirtualMachine){
 
 fn bits_view()->impl Widget<u16> {
     let lab = Label::new(|value: &u16, _env: &_| format!("{:04X}",value)).center().fix_width(W_CELL);
-    let rect_size = 11.0;
+    const RECT_SIZE: f64 = 11.0;
+    struct BitsControl;
+    impl<W: Widget<u16>> Controller<u16, W> for BitsControl {
+        fn event(&mut self, child: &mut W, _ctx: &mut EventCtx, event: &Event, data: &mut u16, _env: &Env) {
+            match event {
+                Event::MouseDown(mouse) => {
+                    for i in 0..=15 {
+                        let r = Rect::new(i as f64 *RECT_SIZE,0.0,(i+1) as f64 *RECT_SIZE,RECT_SIZE);
+                        if r.contains(mouse.pos) {
+                            *data ^= 1 << (15-i);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     let bits = Painter::new(move|ctx,data:&u16,_|{
         for i in 0..=15 {
             let bit = *data & (1<<(15-i)) != 0;
-            let r = Rect::new(i as f64 *rect_size,0.0,(i+1) as f64 *rect_size,rect_size);
+            let r = Rect::new(i as f64 *RECT_SIZE,0.0,(i+1) as f64 *RECT_SIZE,RECT_SIZE);
             ctx.fill(r,if bit {&Color::RED} else {&Color::YELLOW});
             ctx.stroke(r,&Color::BLUE,1.0);
         }
-    }).fix_size(rect_size*16.0,rect_size);
+    }).fix_size(RECT_SIZE*16.0,RECT_SIZE).controller(BitsControl);
 
 
     Flex::row()
