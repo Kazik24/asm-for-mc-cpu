@@ -92,12 +92,18 @@ pub enum Mux1{ StateInc, StatePass }
 #[derive(Copy,Clone,Eq,PartialEq,Hash,Debug)]
 #[repr(u8)]
 pub enum Mux2{ StateDecode, StateSaveToReg(bool), StateSkip}
+#[derive(Copy,Clone,Eq,PartialEq,Hash,Debug)]
+#[repr(u8)]
+pub enum Irq { Normal, Interrupt }
+
 
 #[derive(Clone,Eq,PartialEq,Hash,Debug)]
 pub struct CpuModel{
     pub reg: [u16;16],
     pub mux1: Mux1,
     pub mux2: Mux2,
+    pub irq_state: Irq,
+    pub interrupt_vector: u16,
     pub inout_data: u16,
     pub decoded_opcode: Opcode,
     pub out_address: u16,
@@ -114,6 +120,8 @@ impl CpuModel{
             reg: [0;16],
             mux1: Mux1::StateInc,
             mux2: Mux2::StateDecode,
+            irq_state: Irq::Normal,
+            interrupt_vector: 0,
             inout_data: 0,
             decoded_opcode: Opcode::from(0),
             out_address: 1, //start from address 1

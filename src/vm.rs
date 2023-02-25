@@ -59,6 +59,7 @@ impl VirtualMachine{
     }
     pub fn tick(&mut self,print_ram: bool)->bool{
         let address = self.cpu.out_address as usize & 0x7fff;
+        if self.cpu.halt { return false; }
         match (self.cpu.out_read,self.cpu.out_write) {
             (true,false) => {
                 self.cpu.inout_data = self.ram.get(address).copied().unwrap_or(0);
