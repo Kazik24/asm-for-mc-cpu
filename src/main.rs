@@ -16,6 +16,7 @@ mod assembler;
 mod tests;
 mod gui;
 mod clang;
+mod mylang;
 
 static INPUT: &str = "input";
 static OUTPUT: &str = "output";
