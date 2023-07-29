@@ -21,22 +21,13 @@ pub struct Env {
 
 impl Default for Env {
     fn default() -> Env {
-        Env {
-            input: vec![],
-            output: vec![],
-            pos: 0,
-            next: None,
-        }
+        Env { input: vec![], output: vec![], pos: 0, next: None }
     }
 }
 
 impl Env {
     pub fn new(input: Vec<Token>, next: Option<Box<Env>>) -> Self {
-        Env {
-            input,
-            next,
-            ..Default::default()
-        }
+        Env { input, next, ..Default::default() }
     }
 }
 
@@ -72,12 +63,7 @@ impl Macro {
                         TokenType::Ident(ref name) => {
                             if let Some(n) = map.get(name) {
                                 if let Some(elem) = self.tokens.get_mut(i) {
-                                    *elem = Token::new(
-                                        TokenType::Param(*n),
-                                        0,
-                                        t.filename.clone(),
-                                        t.buf.clone(),
-                                    );
+                                    *elem = Token::new(TokenType::Param(*n), 0, t.filename.clone(), t.buf.clone());
                                 }
                             } else {
                                 continue;
@@ -127,8 +113,8 @@ impl Macro {
     }
 }
 
-pub trait SourceLoader{
-    fn load_source(&self,path: &str)->String;
+pub trait SourceLoader {
+    fn load_source(&self, path: &str) -> String;
 }
 
 pub struct Preprocessor {
@@ -139,11 +125,7 @@ pub struct Preprocessor {
 
 impl Preprocessor {
     pub fn new(loader: Box<dyn SourceLoader>) -> Self {
-        Preprocessor {
-            macros: HashMap::new(),
-            env: Box::new(Env::new(vec![], None)),
-            loader
-        }
+        Preprocessor { macros: HashMap::new(), env: Box::new(Env::new(vec![], None)), loader }
     }
 
     fn next(&mut self) -> Option<Token> {
@@ -293,9 +275,7 @@ impl Preprocessor {
             match t.ty {
                 TokenType::Param(val) => {
                     if t.stringize {
-                        self.env
-                            .output
-                            .push(Self::stringize(&args[val], t.filename, t.buf));
+                        self.env.output.push(Self::stringize(&args[val], t.filename, t.buf));
                     } else {
                         self.env.output.append(&mut args[val].clone());
                     }

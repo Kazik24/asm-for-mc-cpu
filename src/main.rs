@@ -1,22 +1,22 @@
 #![allow(unused)]
 #![deny(unsafe_code)]
-use crate::emulator::Opcode;
-use crate::vm::VirtualMachine;
 use crate::assembler::compile_assembly;
-use clap::*;
-use std::io::{Read, BufWriter, Write};
-use std::fs::{OpenOptions, read_to_string};
-use std::path::Path;
+use crate::emulator::Opcode;
 use crate::gui::launch_emulator_gui;
+use crate::vm::VirtualMachine;
+use clap::*;
+use std::fs::{read_to_string, OpenOptions};
+use std::io::{BufWriter, Read, Write};
+use std::path::Path;
 
-mod emulator;
-mod vm;
 mod assembler;
+mod clang;
+mod emulator;
+mod gui;
+mod mylang;
 #[cfg(test)]
 mod tests;
-mod gui;
-mod clang;
-mod mylang;
+mod vm;
 
 static INPUT: &str = "input";
 static OUTPUT: &str = "output";
@@ -38,14 +38,14 @@ fn main() {
         Some(file) => match read_to_string(Path::new(file)) {
             Ok(s) => s,
             Err(err) => {
-                println!("Error: cannot read source from file \"{}\": {}",file,err);
+                println!("Error: cannot read source from file \"{}\": {}", file, err);
                 return;
             }
-        }
+        },
         None => {
-            let mut source = String::with_capacity(1024*32);
+            let mut source = String::with_capacity(1024 * 32);
             if let Err(err) = std::io::stdin().lock().read_to_string(&mut source) {
-                println!("Error: cannot read source from standard input: {}",err);
+                println!("Error: cannot read source from standard input: {}", err);
                 return;
             }
             source
@@ -54,66 +54,73 @@ fn main() {
     let ops = match compile_assembly(&source) {
         Ok(o) => o,
         Err(err) => {
-            println!("{}",err);
+            println!("{}", err);
             return;
         }
     };
     drop(source);
     match args.value_of(OUTPUT) {
-        Some(output) => {
-            match write_opcodes(&ops,Path::new(output),true,true) {
-                Err(err) => {
-                    println!("Error: cannot write to file \"{}\": {}",output,err);
-                }
-                _ => println!("Info: Compiled successfully."),
+        Some(output) => match write_opcodes(&ops, Path::new(output), true, true) {
+            Err(err) => {
+                println!("Error: cannot write to file \"{}\": {}", output, err);
             }
-        }
+            _ => println!("Info: Compiled successfully."),
+        },
         None => {
             println!("Info: No output file specified. Compiled successfully.");
         }
     }
 
-    if let Some(value) = args.value_of(EMU){
+    if let Some(value) = args.value_of(EMU) {
         let mut vm = match value.parse() {
             Ok(value) => VirtualMachine::new(value),
             Err(_) => {
                 println!("Error when launching emulator.");
-                println!("Value \"{}\" is not valid memory amount.",value);
+                println!("Value \"{}\" is not valid memory amount.", value);
                 return;
             }
         };
         vm.load_start(ops.iter().copied());
-        println!("Launching emulator with {} ram cells ({} bytes)",vm.ram().len(),vm.ram().len()*2);
+        println!("Launching emulator with {} ram cells ({} bytes)", vm.ram().len(), vm.ram().len() * 2);
         launch_emulator_gui(vm);
         println!("Info: Emulator closed.")
     }
 }
 
-fn write_opcodes(ops: &[Opcode],path: &Path,comment: bool, count: bool)->std::io::Result<()>{
+fn write_opcodes(ops: &[Opcode], path: &Path, comment: bool, count: bool) -> std::io::Result<()> {
     let mut file = OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
-    match path.extension().map(|s|s.to_string_lossy().into_owned()).as_deref() {
+    match path.extension().map(|s| s.to_string_lossy().into_owned()).as_deref() {
         Some("hex") => {
             let mut file = BufWriter::new(file);
-            for (i,op) in ops.iter().copied().enumerate() {
-                if i != 0 {writeln!(file)?;}
-                write!(file,"{:04X}",op.bits())?;
+            for (i, op) in ops.iter().copied().enumerate() {
+                if i != 0 {
+                    writeln!(file)?;
+                }
+                write!(file, "{:04X}", op.bits())?;
             }
         }
         Some("bit") => {
             let mut file = BufWriter::new(file);
-            for (i,op) in ops.iter().copied().enumerate() {
-                if i != 0 {writeln!(file)?;}
+            for (i, op) in ops.iter().copied().enumerate() {
+                if i != 0 {
+                    writeln!(file)?;
+                }
                 let v = op.bits();
-                if count { write!(file,"{:04X}: ",i)?; }
-                write!(file,"{:04b} {:04b} {:04b} {:04b}",(v >> 12) & 0xf,(v >> 8) & 0xf,(v >> 4) & 0xf,v & 0xf)?;
+                if count {
+                    write!(file, "{:04X}: ", i)?;
+                }
+                write!(file, "{:04b} {:04b} {:04b} {:04b}", (v >> 12) & 0xf, (v >> 8) & 0xf, (v >> 4) & 0xf, v & 0xf)?;
                 if comment {
-                    if i != 0 && ops[i-1].word_count() == 2 { write!(file,"    #0x{:04X}",op.bits())?; }
-                    else{ write!(file,"    {}",op)?; }
+                    if i != 0 && ops[i - 1].word_count() == 2 {
+                        write!(file, "    #0x{:04X}", op.bits())?;
+                    } else {
+                        write!(file, "    {}", op)?;
+                    }
                 }
             }
         }
         _ => {
-            let bytes = ops.iter().copied().flat_map(|o|o.bits().to_le_bytes()).collect::<Vec<_>>();
+            let bytes = ops.iter().copied().flat_map(|o| o.bits().to_le_bytes()).collect::<Vec<_>>();
             file.write_all(&bytes)?;
         }
     }

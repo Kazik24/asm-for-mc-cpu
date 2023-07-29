@@ -1,14 +1,13 @@
-
 use super::parse::{Node, NodeType};
 use super::roundup;
 use super::{Ctype, Scope, TokenType, Type, Var};
 
+use lazy_static::*;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem;
-use std::sync::Mutex;
-use lazy_static::*;
-use std::cell::{RefCell, Cell};
 use std::ops::DerefMut;
+use std::sync::Mutex;
 
 macro_rules! matches(
     ($e:expr, $p:pat) => (
@@ -40,8 +39,7 @@ macro_rules! matches(
 // >
 // > - Reject bad assignments, such as `1=2+3`.
 
-
-struct SemaStates{
+struct SemaStates {
     globals: RefCell<Vec<Var>>,
     env: RefCell<Env>,
     strlabel: Cell<usize>,
@@ -56,23 +54,20 @@ struct Env {
 
 impl Env {
     pub fn new(next: Option<Box<Env>>) -> Self {
-        Env {
-            vars: HashMap::new(),
-            next,
-        }
+        Env { vars: HashMap::new(), next }
     }
 }
 
-fn into_new_range<T: Sized>(param: T, f: impl Fn(T) -> T,states: &SemaStates) -> T {
+fn into_new_range<T: Sized>(param: T, f: impl Fn(T) -> T, states: &SemaStates) -> T {
     let env = states.env.replace(Env::new(None));
     *states.env.borrow_mut() = Env::new(Some(Box::new(env)));
     let ret = f(param);
     // Rollback
-    states.env.replace_with(|env|*env.next.take().unwrap());
+    states.env.replace_with(|env| *env.next.take().unwrap());
     ret
 }
 
-fn find_var(name: &str,states: &SemaStates) -> Option<Var> {
+fn find_var(name: &str, states: &SemaStates) -> Option<Var> {
     let env = states.env.borrow().clone();
     let mut next: &Option<Box<Env>> = &Some(Box::new(env));
     loop {
@@ -113,7 +108,7 @@ fn check_lval(node: &Node) {
     }
 }
 
-fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
+fn walk(mut node: Node, decay: bool, states: &SemaStates) -> Node {
     use self::NodeType::*;
     let op = node.op.clone();
     match op {
@@ -133,7 +128,7 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
             return maybe_decay(ret, decay);
         }
         Ident(ref name) => {
-            if let Some(var) = find_var(name,states) {
+            if let Some(var) = find_var(name, states) {
                 match var.scope {
                     Scope::Local(offset) => {
                         let mut ret = Node::new(NodeType::Lvar(Scope::Local(offset)));
@@ -141,8 +136,7 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
                         return maybe_decay(ret, decay);
                     }
                     Scope::Global(ref data, len, _) => {
-                        let mut ret =
-                            Node::new(NodeType::Gvar(var.name.clone(), data.clone(), len));
+                        let mut ret = Node::new(NodeType::Gvar(var.name.clone(), data.clone(), len));
                         ret.ty = var.ty.clone();
                         return maybe_decay(ret, decay);
                     }
@@ -156,55 +150,46 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
             states.stacksize.set(roundup(stacksize, node.ty.align) + node.ty.size);
             let offset = states.stacksize.get();
 
-            states.env.borrow_mut().vars.insert(
-                name.clone(),
-                Var::new(node.ty.clone(), name.clone(), Scope::Local(offset)),
-            );
+            states
+                .env
+                .borrow_mut()
+                .vars
+                .insert(name.clone(), Var::new(node.ty.clone(), name.clone(), Scope::Local(offset)));
 
             let mut init = None;
             if let Some(init2) = init_may {
-                init = Some(Box::new(walk(*init2, true,states)));
+                init = Some(Box::new(walk(*init2, true, states)));
             }
             node.op = Vardef(name, init, Scope::Local(offset));
         }
         If(mut cond, mut then, els_may) => {
-            cond = Box::new(walk(*cond, true,states));
-            then = Box::new(walk(*then, true,states));
+            cond = Box::new(walk(*cond, true, states));
+            then = Box::new(walk(*then, true, states));
             let mut new_els = None;
             if let Some(els) = els_may {
-                new_els = Some(Box::new(walk(*els, true,states)));
+                new_els = Some(Box::new(walk(*els, true, states)));
             }
             node.op = If(cond, then, new_els);
         }
         Ternary(mut cond, mut then, mut els) => {
-            cond = Box::new(walk(*cond, true,states));
-            then = Box::new(walk(*then, true,states));
-            els = Box::new(walk(*els, true,states));
+            cond = Box::new(walk(*cond, true, states));
+            then = Box::new(walk(*then, true, states));
+            els = Box::new(walk(*els, true, states));
             node.ty = then.ty.clone();
             node.op = Ternary(cond, then, els);
         }
         For(init, cond, inc, body) => {
             let f = |(init, cond, inc, body)| -> (Node, Node, Node, Node) {
-                (
-                    walk(init, true,states),
-                    walk(cond, true,states),
-                    walk(inc, true,states),
-                    walk(body, true,states),
-                )
+                (walk(init, true, states), walk(cond, true, states), walk(inc, true, states), walk(body, true, states))
             };
-            let (init, cond, inc, body) = into_new_range((*init, *cond, *inc, *body),f,states);
-            node.op = For(
-                Box::new(init),
-                Box::new(cond),
-                Box::new(inc),
-                Box::new(body),
-            );
+            let (init, cond, inc, body) = into_new_range((*init, *cond, *inc, *body), f, states);
+            node.op = For(Box::new(init), Box::new(cond), Box::new(inc), Box::new(body));
         }
         DoWhile(body, cond) => {
-            node.op = DoWhile(Box::new(walk(*body, true,states)), Box::new(walk(*cond, true,states)));
+            node.op = DoWhile(Box::new(walk(*body, true, states)), Box::new(walk(*cond, true, states)));
         }
         Dot(mut expr, name, _) => {
-            expr = Box::new(walk(*expr, true,states));
+            expr = Box::new(walk(*expr, true, states));
             let offset;
             if let Ctype::Struct(ref members) = expr.ty.ty {
                 if members.is_empty() {
@@ -241,11 +226,11 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
             use self::TokenType::*;
             match token_type {
                 Plus | Minus => {
-                    lhs = Box::new(walk(*lhs, true,states));
-                    rhs = Box::new(walk(*rhs, true,states));
+                    lhs = Box::new(walk(*lhs, true, states));
+                    rhs = Box::new(walk(*rhs, true, states));
 
                     if matches!(rhs.ty.ty, Ctype::Ptr(_)) {
-                        mem::swap(lhs.deref_mut(),rhs.deref_mut());
+                        mem::swap(lhs.deref_mut(), rhs.deref_mut());
                     }
                     if matches!(rhs.ty.ty, Ctype::Ptr(_)) {
                         panic!("'pointer {:?} pointer' is not defined", node.op)
@@ -259,9 +244,9 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
                     node.ty = lhs.ty;
                 }
                 AddEQ | SubEQ => {
-                    lhs = Box::new(walk(*lhs, false,states));
+                    lhs = Box::new(walk(*lhs, false, states));
                     check_lval(&*lhs);
-                    rhs = Box::new(walk(*rhs, true,states));
+                    rhs = Box::new(walk(*rhs, true, states));
 
                     if matches!(lhs.ty.ty, Ctype::Ptr(_)) {
                         rhs = Box::new(Node::scale_ptr(rhs, &lhs.ty));
@@ -270,47 +255,47 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
                     node.ty = lhs.ty;
                 }
                 Equal | MulEQ | DivEQ | ModEQ | ShlEQ | ShrEQ | BitandEQ | XorEQ | BitorEQ => {
-                    lhs = Box::new(walk(*lhs, false,states));
+                    lhs = Box::new(walk(*lhs, false, states));
                     check_lval(&*lhs);
-                    node.op = BinOp(token_type, lhs.clone(), Box::new(walk(*rhs, true,states)));
+                    node.op = BinOp(token_type, lhs.clone(), Box::new(walk(*rhs, true, states)));
                     node.ty = lhs.ty;
                 }
                 _ => {
-                    lhs = Box::new(walk(*lhs, true,states));
-                    rhs = Box::new(walk(*rhs, true,states));
+                    lhs = Box::new(walk(*lhs, true, states));
+                    rhs = Box::new(walk(*rhs, true, states));
                     node.op = BinOp(token_type, lhs.clone(), rhs);
                     node.ty = lhs.ty;
                 }
             }
         }
         PostInc(mut expr) => {
-            expr = Box::new(walk(*expr, true,states));
+            expr = Box::new(walk(*expr, true, states));
             node.ty = expr.ty.clone();
             node.op = PostInc(expr);
         }
         PostDec(mut expr) => {
-            expr = Box::new(walk(*expr, true,states));
+            expr = Box::new(walk(*expr, true, states));
             node.ty = expr.ty.clone();
             node.op = PostDec(expr);
         }
         Neg(mut expr) => {
-            expr = Box::new(walk(*expr, true,states));
+            expr = Box::new(walk(*expr, true, states));
             node.ty = expr.ty.clone();
             node.op = Neg(expr);
         }
         Exclamation(mut expr) => {
-            expr = Box::new(walk(*expr, true,states));
+            expr = Box::new(walk(*expr, true, states));
             node.ty = expr.ty.clone();
             node.op = Exclamation(expr);
         }
         Addr(mut expr) => {
-            expr = Box::new(walk(*expr, true,states));
+            expr = Box::new(walk(*expr, true, states));
             check_lval(&*expr);
             node.ty = Box::new(Type::ptr_to(expr.ty.clone()));
             node.op = Addr(expr);
         }
         Deref(mut expr) => {
-            expr = Box::new(walk(*expr, true,states));
+            expr = Box::new(walk(*expr, true, states));
             match expr.ty.ty {
                 Ctype::Ptr(ref ptr_to) => node.ty = ptr_to.clone(),
                 Ctype::Void => panic!("cannot dereference void pointer"),
@@ -319,18 +304,18 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
             node.op = Deref(expr);
             return maybe_decay(node, decay);
         }
-        Return(expr) => node.op = Return(Box::new(walk(*expr, true,states))),
-        ExprStmt(expr) => node.op = ExprStmt(Box::new(walk(*expr, true,states))),
+        Return(expr) => node.op = Return(Box::new(walk(*expr, true, states))),
+        ExprStmt(expr) => node.op = ExprStmt(Box::new(walk(*expr, true, states))),
         Sizeof(mut expr) => {
-            expr = Box::new(walk(*expr, false,states));
+            expr = Box::new(walk(*expr, false, states));
             node = Node::new_int(expr.ty.size as i32)
         }
         Alignof(mut expr) => {
-            expr = Box::new(walk(*expr, false,states));
+            expr = Box::new(walk(*expr, false, states));
             node = Node::new_int(expr.ty.align as i32)
         }
         Call(name, mut args) => {
-            if let Some(var) = find_var(&name,states) {
+            if let Some(var) = find_var(&name, states) {
                 if let Ctype::Func(returning) = var.ty.ty {
                     node.ty = returning;
                 } else {
@@ -340,22 +325,21 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
                 eprint!("bad function: {}", name);
             }
 
-            args = args.into_iter().map(|arg| walk(arg, true,states)).collect();
+            args = args.into_iter().map(|arg| walk(arg, true, states)).collect();
             node.op = Call(name, args);
         }
         CompStmt(mut stmts) => {
-            let f = |stmts: Vec<Node>| -> Vec<Node> {
-                stmts.into_iter().map(|stmt| walk(stmt, true,states)).collect()
-            };
-            stmts = into_new_range(stmts,f,states);
+            let f =
+                |stmts: Vec<Node>| -> Vec<Node> { stmts.into_iter().map(|stmt| walk(stmt, true, states)).collect() };
+            stmts = into_new_range(stmts, f, states);
             node.op = CompStmt(stmts);
         }
         VecStmt(mut stmts) => {
-            stmts = stmts.into_iter().map(|stmt| walk(stmt, true,states)).collect();
+            stmts = stmts.into_iter().map(|stmt| walk(stmt, true, states)).collect();
             node.op = VecStmt(stmts);
         }
         StmtExpr(body) => {
-            node.op = StmtExpr(Box::new(walk(*body, true,states)));
+            node.op = StmtExpr(Box::new(walk(*body, true, states)));
             node.ty = Box::new(Type::int_ty())
         }
         _ => panic!("unknown node type"),
@@ -366,7 +350,7 @@ fn walk(mut node: Node, decay: bool,states: &SemaStates) -> Node {
 pub fn sema(nodes: Vec<Node>) -> (Vec<Node>, Vec<Var>) {
     let mut new_nodes = vec![];
 
-    let states = SemaStates{
+    let states = SemaStates {
         globals: RefCell::new(vec![]),
         env: RefCell::new(Env::new(None)),
         stacksize: Cell::new(0),
@@ -397,15 +381,10 @@ pub fn sema(nodes: Vec<Node>) -> (Vec<Node>, Vec<Var>) {
         if let NodeType::Func(name, args, body, _) = node.op {
             let mut args2 = vec![];
             for arg in args {
-                args2.push(walk(arg, true,&states));
+                args2.push(walk(arg, true, &states));
             }
-            let body2 = walk(*body, true,&states);
-            node.op = NodeType::Func(
-                name.clone(),
-                args2,
-                Box::new(body2),
-                states.stacksize.get(),
-            );
+            let body2 = walk(*body, true, &states);
+            node.op = NodeType::Func(name.clone(), args2, Box::new(body2), states.stacksize.get());
             states.stacksize.set(0);
             new_nodes.push(node);
         }

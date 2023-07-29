@@ -6,15 +6,12 @@ const REGS: [&str; REGS_N] = ["r10", "r11", "rbx", "r12", "r13", "r14", "r15"];
 const REGS8: [&str; REGS_N] = ["r10b", "r11b", "bl", "r12b", "r13b", "r14b", "r15b"];
 const REGS32: [&str; REGS_N] = ["r10d", "r11d", "ebx", "r12d", "r13d", "r14d", "r15d"];
 
-
 // Quoted from 9cc
 // > This pass generates x86-64 assembly from IR.
 
 const ARGREGS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
 const ARGREGS8: [&str; 6] = ["dil", "sil", "dl", "cl", "r8b", "r9b"];
 const ARGREGS32: [&str; 6] = ["edi", "esi", "edx", "ecx", "r8d", "r9d"];
-
-
 
 fn backslash_escape(s: String, len: usize) -> String {
     let mut sb = String::new();
@@ -81,7 +78,7 @@ fn argreg(r: usize, size: u8) -> &'static str {
     }
 }
 
-fn gen(label: usize,f: Function) {
+fn gen(label: usize, f: Function) {
     use self::IROp::*;
     let ret = format!(".Lend{}", label);
 
@@ -218,7 +215,7 @@ pub fn gen_x86(globals: Vec<Var>, fns: Vec<Function>) {
         unreachable!();
     }
 
-    for (l,f) in fns.into_iter().enumerate() {
-        gen(l,f);
+    for (l, f) in fns.into_iter().enumerate() {
+        gen(l, f);
     }
 }

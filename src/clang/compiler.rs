@@ -1,4 +1,3 @@
-
 use super::gen_ir::gen_ir;
 use super::gen_x86::gen_x86;
 use super::irdump::dump_ir;
@@ -8,11 +7,11 @@ use super::regalloc::alloc_regs;
 use super::sema::sema;
 use super::token::tokenize;
 
-use std::env;
-use std::process;
-use std::collections::HashMap;
 use crate::clang::preprocess::SourceLoader;
+use std::collections::HashMap;
+use std::env;
 use std::fmt::{Debug, Formatter};
+use std::process;
 
 fn usage() -> ! {
     eprintln!("Usage: 9cc [-dump-ir1] [-dump-ir2] <file>");
@@ -62,14 +61,13 @@ pub fn compile_clang() {
     gen_x86(globals, fns);
 }
 
-
-pub struct MapLoader(HashMap<String,String>);
-impl MapLoader{
-    pub fn main(src: &str)->Self{
-        Self([("main.c".to_string(),src.to_string())].iter().cloned().collect())
+pub struct MapLoader(HashMap<String, String>);
+impl MapLoader {
+    pub fn main(src: &str) -> Self {
+        Self([("main.c".to_string(), src.to_string())].iter().cloned().collect())
     }
 }
-impl SourceLoader for MapLoader{
+impl SourceLoader for MapLoader {
     fn load_source(&self, path: &str) -> String {
         self.0.get(path).cloned().unwrap_or(String::new())
     }
@@ -79,7 +77,7 @@ impl SourceLoader for MapLoader{
 mod tests {
     use super::*;
     #[test]
-    fn test_check(){
+    fn test_check() {
         let source = "
         void swap(int *xp, int *yp) {
             int temp = *xp;
@@ -100,23 +98,25 @@ mod tests {
 
         ";
 
-
         let tokens = tokenize("main.c".to_string(), &mut Preprocessor::new(Box::new(MapLoader::main(source))));
 
         let nodes = parse(&tokens);
         let (nodes, globals) = sema(nodes);
         let mut fns = gen_ir(nodes.clone());
 
-        println!("Nodes: {:#?}",nodes);
+        println!("Nodes: {:#?}", nodes);
         println!("**********************************");
 
-
-        println!("Fns: {:#?}",fns.iter().map(|v|v.ir.iter().map(|v|DebugFlat(v)).collect::<Vec<_>>()).collect::<Vec<_>>());
+        println!(
+            "Fns: {:#?}",
+            fns.iter().map(|v| v.ir.iter().map(|v| DebugFlat(v)).collect::<Vec<_>>()).collect::<Vec<_>>()
+        );
     }
 }
 
-
-struct DebugFlat<'a,T>(&'a T);
-impl<'a,T: Debug> Debug for DebugFlat<'a,T>{
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { write!(f,"{:?}",self.0) }
+struct DebugFlat<'a, T>(&'a T);
+impl<'a, T: Debug> Debug for DebugFlat<'a, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
 }

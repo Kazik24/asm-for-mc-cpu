@@ -2,8 +2,8 @@ use super::gen_ir::{Function, IROp, IRType, IR};
 use super::irdump::IRInfo;
 use super::REGS_N;
 
-use std::sync::Mutex;
 use lazy_static::*;
+use std::sync::Mutex;
 
 // Quoted from 9cc
 // > Register allocator.

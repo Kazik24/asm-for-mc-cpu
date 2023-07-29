@@ -1,7 +1,7 @@
-use std::fmt::{Debug, Display, Formatter, Write};
 use crate::*;
-use std::sync::{Arc, Mutex};
 use druid::piet::TextStorage;
+use std::fmt::{Debug, Display, Formatter, Write};
+use std::sync::{Arc, Mutex};
 use TokenKind::*;
 
 #[derive(Clone)]
@@ -11,41 +11,43 @@ struct State {
 }
 
 #[derive(Clone)]
-pub struct SourceMap{
-    src: Arc<str>
+pub struct SourceMap {
+    src: Arc<str>,
 }
 
 static GLOBAL_SOURCE: Mutex<Option<SourceMap>> = Mutex::new(None);
 
 impl SourceMap {
-
-    pub fn get_global()->Option<SourceMap>{
+    pub fn get_global() -> Option<SourceMap> {
         Option::clone(&*GLOBAL_SOURCE.lock().unwrap())
     }
-    pub fn global()->SourceMap{
+    pub fn global() -> SourceMap {
         Self::get_global().unwrap()
     }
-    pub fn set_global(map: SourceMap){
+    pub fn set_global(map: SourceMap) {
         *GLOBAL_SOURCE.lock().unwrap() = Some(map);
     }
-    pub fn set_new(src: Arc<str>){
-        Self::set_global(SourceMap{src})
+    pub fn set_new(src: Arc<str>) {
+        Self::set_global(SourceMap { src })
     }
-    pub fn get_source_for(&self,span: Span)->Option<&str>{
+    pub fn get_source_for(&self, span: Span) -> Option<&str> {
         self.src.get(span.start..span.end)
     }
 }
 
-
-#[derive(Copy,Clone,Eq, PartialEq,Hash,Debug)]
-pub struct Span{
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub struct Span {
     start: usize,
-    end: usize
+    end: usize,
 }
 
 impl Span {
-    pub fn lo(self) -> usize { self.start }
-    pub fn hi(self) -> usize { self.end }
+    pub fn lo(self) -> usize {
+        self.start
+    }
+    pub fn hi(self) -> usize {
+        self.end
+    }
     pub fn len(&self) -> usize {
         self.end - self.start
     }
@@ -256,8 +258,6 @@ impl Display for KindSpec {
     }
 }
 
-
-
 impl State {
     fn next(&mut self) -> Option<char> {
         self.src[self.index..].chars().next().map(|ch| {
@@ -272,10 +272,7 @@ impl State {
     }
     #[inline]
     fn span_from(&self, start: usize) -> Span {
-        Span{
-            start,
-            end: self.index
-        }
+        Span { start, end: self.index }
     }
 
     pub fn parse_next(&mut self) -> Token {
@@ -318,7 +315,7 @@ impl State {
                         //windows line ending
                         kind: Whitespace(KindWhitespace::NewLine),
                         span: self.span_from(start),
-                    }
+                    };
                 }
                 None => {} //dont back on eos
                 Some(_) => self.back(),

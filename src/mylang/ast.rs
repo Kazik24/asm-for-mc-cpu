@@ -1,12 +1,12 @@
 use crate::mylang::preproc::{is_whitespace, Span};
 
 #[derive(Clone, Debug)]
-pub enum Item{
+pub enum Item {
     Func(FuncDef),
     Const(ConstDef),
 }
 
-enum Type{
+enum Type {
     Int(Span),
     Pointer(Span),
     Byte(Span),
@@ -14,57 +14,55 @@ enum Type{
     Void,
 }
 
-struct Argument{
+struct Argument {
     name: Identifier,
     ty: Type,
 }
 
-struct Identifier{
+struct Identifier {
     value: Span,
 }
 
-struct FuncDef{
+struct FuncDef {
     name: Identifier,
     inline: bool,
     args: Vec<Argument>,
     stt: Vec<Statement>,
 }
 
-struct ConstDef{
+struct ConstDef {
     name: Identifier,
     ty: Type,
     init: Box<Expression>,
 }
 
-enum Expression{
-    AssignVar(Identifier,Box<Expression>), //ident = expr
-    AssignIndex(Identifier,Box<Expression>,Box<Expression>), //ident[expr1] = expr2
-    AssignPointer(Identifier,Box<Expression>), //*ident = expr
-    Call(Identifier, Vec<Expression>), // name(expr0, expr1, ... , exprN)
-    Add(Box<Expression>,Box<Expression>), // expr1 + expr2
-    Sub(Box<Expression>,Box<Expression>), // expr1 - expr2
-    Number(i64,Span), // number literal
-    Cast(Type, Box<Expression>), // expr as ty
-    Neg(Box<Expression>), //-expr
-    Not(Box<Expression>), // !expr
-    Index(Box<Expression>,Box<Expression>), // expr1[expr2]
-    Paren(Box<Expression>), // ( expr )
-    ArrayInit(Vec<Expression>), // [ expr0 , expr1 , ... , exprN ]
+enum Expression {
+    AssignVar(Identifier, Box<Expression>),                    //ident = expr
+    AssignIndex(Identifier, Box<Expression>, Box<Expression>), //ident[expr1] = expr2
+    AssignPointer(Identifier, Box<Expression>),                //*ident = expr
+    Call(Identifier, Vec<Expression>),                         // name(expr0, expr1, ... , exprN)
+    Add(Box<Expression>, Box<Expression>),                     // expr1 + expr2
+    Sub(Box<Expression>, Box<Expression>),                     // expr1 - expr2
+    Number(i64, Span),                                         // number literal
+    Cast(Type, Box<Expression>),                               // expr as ty
+    Neg(Box<Expression>),                                      //-expr
+    Not(Box<Expression>),                                      // !expr
+    Index(Box<Expression>, Box<Expression>),                   // expr1[expr2]
+    Paren(Box<Expression>),                                    // ( expr )
+    ArrayInit(Vec<Expression>),                                // [ expr0 , expr1 , ... , exprN ]
 }
 
-enum Statement{
-    Var{name: Identifier, ty: Type, expr: Box<Expression>}, // var name: ty = expr;
-    While{cond: Box<Expression>, block: Vec<Statement>}, // while cond { ... }
-    DoWhile{block: Vec<Statement>, cond: Box<Expression>}, // do { ... } while cond;
-    Return(Box<Expression>), // return expr;
-    If{cond: Box<Expression>, block: Vec<Statement>, els: Option<Vec<Statement>>}, // if cond { block.. } else { els.. }
-    Break(Span), // break;
-    Continue(Span), // continue;
-    Expr(Box<Expression>), // expr;
-    Block(Vec<Statement>) // { block.. }
+enum Statement {
+    Var { name: Identifier, ty: Type, expr: Box<Expression> }, // var name: ty = expr;
+    While { cond: Box<Expression>, block: Vec<Statement> },    // while cond { ... }
+    DoWhile { block: Vec<Statement>, cond: Box<Expression> },  // do { ... } while cond;
+    Return(Box<Expression>),                                   // return expr;
+    If { cond: Box<Expression>, block: Vec<Statement>, els: Option<Vec<Statement>> }, // if cond { block.. } else { els.. }
+    Break(Span),                                                                      // break;
+    Continue(Span),                                                                   // continue;
+    Expr(Box<Expression>),                                                            // expr;
+    Block(Vec<Statement>),                                                            // { block.. }
 }
-
-
 
 peg::parser!(pub grammar parser() for str {
 

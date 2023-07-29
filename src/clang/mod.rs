@@ -1,3 +1,4 @@
+pub mod compiler;
 mod gen_ir;
 mod gen_x86;
 mod irdump;
@@ -6,10 +7,8 @@ mod preprocess;
 mod regalloc;
 mod sema;
 mod token;
-pub mod compiler;
 
 const REGS_N: usize = 7;
-
 
 // Token type
 #[derive(Debug, PartialEq, Clone)]
@@ -152,11 +151,7 @@ pub struct Type {
 
 impl Default for Type {
     fn default() -> Type {
-        Type {
-            ty: Ctype::default(),
-            size: 4,
-            align: 4,
-        }
+        Type { ty: Ctype::default(), size: 4, align: 4 }
     }
 }
 

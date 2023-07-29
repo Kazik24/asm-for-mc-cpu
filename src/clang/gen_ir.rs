@@ -13,8 +13,8 @@
 use super::parse::{Node, NodeType};
 use super::{Ctype, Scope, TokenType, Type};
 
-use std::sync::Mutex;
 use lazy_static::*;
+use std::sync::Mutex;
 
 lazy_static! {
     static ref NUM_REGS: Mutex<usize> = Mutex::new(0);
@@ -55,11 +55,7 @@ pub struct Function {
 
 impl Function {
     fn new(name: String, ir: Vec<IR>, stacksize: usize) -> Self {
-        Function {
-            name,
-            ir,
-            stacksize,
-        }
+        Function { name, ir, stacksize }
     }
 }
 
@@ -222,11 +218,7 @@ fn gen_pre_inc(ty: &Type, expr: Box<Node>, num: i32) -> i32 {
     let val = *NUM_REGS.lock().unwrap();
     *NUM_REGS.lock().unwrap() += 1;
     load(ty, Some(val), addr);
-    add(
-        IROp::AddImm,
-        Some(val),
-        Some(num as usize * get_inc_scale(ty)),
-    );
+    add(IROp::AddImm, Some(val), Some(num as usize * get_inc_scale(ty)));
     store(ty, addr, Some(val));
     kill(addr);
     val as i32
@@ -234,11 +226,7 @@ fn gen_pre_inc(ty: &Type, expr: Box<Node>, num: i32) -> i32 {
 
 fn gen_post_inc(ty: &Type, expr: Box<Node>, num: i32) -> i32 {
     let val = gen_pre_inc(ty, expr, num);
-    add(
-        IROp::SubImm,
-        Some(val as usize),
-        Some(num as usize * get_inc_scale(ty)),
-    );
+    add(IROp::SubImm, Some(val as usize), Some(num as usize * get_inc_scale(ty)));
     val as i32
 }
 
@@ -371,8 +359,9 @@ fn gen_expr(node: Box<Node>) -> Option<usize> {
                     label(y);
                     r1
                 }
-                MulEQ | DivEQ | ModEQ | AddEQ | SubEQ | ShlEQ | ShrEQ | BitandEQ | XorEQ
-                | BitorEQ => gen_assign_op(&op, &node.ty, lhs, rhs),
+                MulEQ | DivEQ | ModEQ | AddEQ | SubEQ | ShlEQ | ShrEQ | BitandEQ | XorEQ | BitorEQ => {
+                    gen_assign_op(&op, &node.ty, lhs, rhs)
+                }
                 EQ => gen_binop(IROp::EQ, lhs, rhs),
                 NE => gen_binop(IROp::NE, lhs, rhs),
                 LE => gen_binop(IROp::LE, lhs, rhs),

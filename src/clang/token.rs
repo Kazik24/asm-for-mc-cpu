@@ -2,18 +2,16 @@ use super::preprocess;
 use super::CharacterType;
 use super::TokenType;
 
+use lazy_static::*;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::prelude::*;
 use std::rc::Rc;
-use lazy_static::*;
-
-
 
 pub fn tokenize(path: String, ctx: &mut preprocess::Preprocessor) -> Vec<Token> {
     let source = ctx.loader.load_source(&path);
-    let mut tokenizer = Tokenizer::new(Rc::new(path),source);
+    let mut tokenizer = Tokenizer::new(Rc::new(path), source);
     tokenizer.canonicalize_newline();
     tokenizer.remove_backslash_newline();
     tokenizer.scan(&keyword_map());
@@ -73,13 +71,7 @@ impl Default for Token {
 
 impl Token {
     pub fn new(ty: TokenType, start: usize, filename: Rc<String>, buf: Rc<Vec<char>>) -> Self {
-        Token {
-            ty,
-            buf,
-            filename,
-            start,
-            ..Default::default()
-        }
+        Token { ty, buf, filename, start, ..Default::default() }
     }
 
     pub fn bad_token(&self, msg: &str) -> ! {
@@ -153,13 +145,8 @@ struct Tokenizer {
 }
 
 impl Tokenizer {
-    fn new(filename: Rc<String>,source: String) -> Self {
-        Tokenizer {
-            p: Rc::new(source.chars().collect()),
-            filename,
-            pos: 0,
-            tokens: vec![],
-        }
+    fn new(filename: Rc<String>, source: String) -> Self {
+        Tokenizer { p: Rc::new(source.chars().collect()), filename, pos: 0, tokens: vec![] }
     }
 
     fn read_file(filename: &str) -> String {
@@ -167,12 +154,10 @@ impl Tokenizer {
         let mut fp = io::stdin();
         if filename != &"-".to_string() {
             let mut fp = File::open(filename).expect("file not found");
-            fp.read_to_string(&mut input)
-                .expect("something went wrong reading the file");
+            fp.read_to_string(&mut input).expect("something went wrong reading the file");
             return input;
         }
-        fp.read_to_string(&mut input)
-            .expect("something went wrong reading the file");
+        fp.read_to_string(&mut input).expect("something went wrong reading the file");
         input
     }
 
@@ -312,11 +297,7 @@ impl Tokenizer {
         } else {
             self.pos += 1;
             let c2 = self.p.get(self.pos).unwrap();
-            result = if let Some(esc) = Self::escaped(*c2) {
-                esc
-            } else {
-                *c2
-            };
+            result = if let Some(esc) = Self::escaped(*c2) { esc } else { *c2 };
             self.pos += 1;
         }
 
@@ -454,12 +435,7 @@ impl Tokenizer {
     fn append(&mut self, x_str: &str, y_str: &str, start: usize) -> Token {
         let concated = format!("{}{}", x_str, y_str);
         let l = concated.len() + 1; // Because `+1` has `\0`.
-        Token::new(
-            TokenType::Str(concated, l),
-            start,
-            self.filename.clone(),
-            self.p.clone(),
-        )
+        Token::new(TokenType::Str(concated, l), start, self.filename.clone(), self.p.clone())
     }
 
     fn join_string_literals(&mut self) {
@@ -468,9 +444,7 @@ impl Tokenizer {
 
         for t in self.tokens.clone().into_iter() {
             if let Some(ref last) = last_may {
-                if let (TokenType::Str(ref last_str, _), TokenType::Str(ref t_str, _)) =
-                    (&last.ty, &t.ty)
-                {
+                if let (TokenType::Str(ref last_str, _), TokenType::Str(ref t_str, _)) = (&last.ty, &t.ty) {
                     let new = self.append(last_str, t_str, last.start);
                     v.pop();
                     v.push(new);
@@ -485,12 +459,7 @@ impl Tokenizer {
     }
 
     fn strip_newlines_tokens(&mut self) {
-        self.tokens = self
-            .tokens
-            .clone()
-            .into_iter()
-            .filter(|t| t.ty != TokenType::NewLine)
-            .collect()
+        self.tokens = self.tokens.clone().into_iter().filter(|t| t.ty != TokenType::NewLine).collect()
     }
 
     fn bad_position(&self, msg: &'static str) {
