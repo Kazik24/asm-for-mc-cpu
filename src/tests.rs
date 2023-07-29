@@ -62,7 +62,7 @@ fn test_compare(){
 
             let (diff,carry) = a.overflowing_sub(b);
             let s = {
-                let m = (1 << (size_of_val(&diff) * 8 - 1));
+                let m = 1 << (size_of_val(&diff) * 8 - 1);
                 let av = a & m != 0;
                 let bv = (!b) & m != 0;
                 let cv = diff & m != 0;

@@ -455,7 +455,7 @@ const MULTILINE_COMMENT_STAR: char = '*';
 fn is_new_line(c: char) -> bool {
     c == LF || c == CR || c == '\u{2028}' || c == '\u{2029}' || c == '\u{0085}'
 }
-fn is_whitespace(c: char) -> bool {
+pub fn is_whitespace(c: char) -> bool {
     if is_new_line(c) {
         return false;
     } //exclude new line chars

@@ -2,6 +2,7 @@
 
 mod compiler;
 mod preproc;
+mod ast;
 
 use std::collections::HashMap;
 pub use compiler::*;

@@ -60,3 +60,10 @@ Opcodes that require only 2 arguments.
 | `1110aaaarrrr1111` | NOT - Negate `reg[r] = !reg[a]`                                                                                               |
 | `1111aaaarrrr1111` | CALL - Conditional call link - if reg[a] == 0 then reg[r] = pc (for next instruction), pc = NEXT OPCODE else SKIP NEXT (Ccll) |
 
+### Interrupt opcodes
+
+| `MSB..........LSB` | Opcode description                                                                                                                                |
+|--------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
+| `001000CWrrrr1111` | W - (0 - read/1 - write) for accessing hidden interrupt reg, C - (0 - keep, 1 - clear) clear interrupt pending flag                               |
+| `001001DDrrrr1111` | Read interrupt flags (0 - interrupt pending, 1 - interrupt scheduled, 2 - interrupt disabled) D - (0 - keep, 1 - disable, 2 - enable, 3 - toggle) |
+| `0010001000001111` |                                                                                                                                                   |
