@@ -283,9 +283,9 @@ fn bits_view() -> impl Widget<u16> {
     const RECT_SIZE: f64 = 11.0;
     struct BitsControl;
     impl<W: Widget<u16>> Controller<u16, W> for BitsControl {
-        fn event(&mut self, child: &mut W, _ctx: &mut EventCtx, event: &Event, data: &mut u16, _env: &Env) {
+        fn event(&mut self, _child: &mut W, _ctx: &mut EventCtx, event: &Event, data: &mut u16, _env: &Env) {
             match event {
-                Event::MouseDown(mouse) => {
+                Event::MouseUp(mouse) => {
                     for i in 0..=15 {
                         let r = Rect::new(i as f64 * RECT_SIZE, 0.0, (i + 1) as f64 * RECT_SIZE, RECT_SIZE);
                         if r.contains(mouse.pos) {
