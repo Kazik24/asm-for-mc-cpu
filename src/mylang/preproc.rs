@@ -42,6 +42,10 @@ pub struct Span {
 }
 
 impl Span {
+    #[cfg(test)]
+    pub const fn mocked() -> Self {
+        Self { start: 0, end: 0 }
+    }
     pub fn lo(self) -> usize {
         self.start
     }
@@ -62,6 +66,9 @@ impl Span {
     }
     pub fn intersects(self, span: Self) -> bool {
         self.lo() <= span.hi() && self.hi() >= span.lo()
+    }
+    pub fn merge(&self, other: Self) -> Self {
+        todo!()
     }
 }
 

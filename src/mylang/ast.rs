@@ -1,62 +1,126 @@
 use crate::mylang::preproc::{is_whitespace, Span};
+use std::mem::discriminant;
 
 #[derive(Clone, Debug)]
 pub enum Item {
     Func(FuncDef),
     Const(ConstDef),
 }
-
-enum Type {
-    Int(Span),
-    Pointer(Span),
-    Byte(Span),
+#[derive(Clone, Debug)]
+pub enum Type {
+    I16(Span),
+    U16(Span),
+    Ptr(Box<Type>),
+    U8(Span),
+    I8(Span),
     Bool(Span),
-    Void,
 }
 
-struct Argument {
-    name: Identifier,
-    ty: Type,
+impl Type {
+    pub fn type_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ptr(a), Self::Ptr(b)) => a.type_eq(b),
+            _ => discriminant(self) == discriminant(&other),
+        }
+    }
+    pub fn span(&self) -> Span {
+        use Type::*;
+        match self {
+            I16(v) | U16(v) | I8(v) | U8(v) | Bool(v) => *v,
+            Self::Ptr(v) => v.span(),
+        }
+    }
+    pub fn size_of(&self) -> u32 {
+        use Type::*;
+        match self {
+            I16(_) | U16(_) | Ptr(_) => 2,
+            I8(_) | U8(_) | Bool(_) => 1,
+        }
+    }
+    pub fn signed(&self) -> bool {
+        use Type::*;
+        match self {
+            Bool(_) | U16(_) | Ptr(_) | U8(_) => false,
+            I8(_) | I16(_) => true,
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub struct Argument {
+    pub name: Identifier,
+    pub ty: Type,
+}
+#[derive(Clone, Debug)]
+pub struct Identifier {
+    pub span: Span,
+    pub value: String,
+}
+#[derive(Clone, Debug)]
+pub struct FuncDef {
+    pub name: Identifier,
+    pub inline: bool,
+    pub ret: Option<Type>,
+    pub args: Vec<Argument>,
+    pub stt: Vec<Statement>,
+}
+#[derive(Clone, Debug)]
+pub struct ConstDef {
+    pub name: Identifier,
+    pub ty: Type,
+    pub init: Box<Expression>,
+}
+#[derive(Clone, Debug)]
+pub enum Expression {
+    Index(Box<Expression>, Box<Expression>),  // expr1[expr2]
+    Pointer(Box<Expression>),                 // *expr
+    Call(Identifier, Vec<Expression>),        // name(expr0, expr1, ... , exprN)
+    Add(Box<Expression>, Box<Expression>),    // expr1 + expr2
+    Sub(Box<Expression>, Box<Expression>),    // expr1 - expr2
+    Mul(Box<Expression>, Box<Expression>),    // expr1 * expr2
+    Shl(Box<Expression>, Box<Expression>),    // expr1 << expr2
+    Shr(Box<Expression>, Box<Expression>),    // expr1 >> expr2
+    AriShr(Box<Expression>, Box<Expression>), // expr1 >>> expr2 `arithmetic shift`
+    Gr(Box<Expression>, Box<Expression>),     // expr1 > expr2
+    Ge(Box<Expression>, Box<Expression>),     // expr1 >= expr2
+    Lo(Box<Expression>, Box<Expression>),     // expr1 < expr2
+    Le(Box<Expression>, Box<Expression>),     // expr1 <= expr2
+    Eq(Box<Expression>, Box<Expression>),     // expr1 == expr2
+    Ne(Box<Expression>, Box<Expression>),     // expr1 != expr2
+    And(Box<Expression>, Box<Expression>),    // expr1 & expr2
+    Or(Box<Expression>, Box<Expression>),     // expr1 | expr2
+    Xor(Box<Expression>, Box<Expression>),    // expr1 ^ expr2
+    Number(i64, bool, Span),                  // number literal, bool is signed/unsigned
+    Cast(Type, Box<Expression>),              // expr as ty
+    Neg(Box<Expression>),                     // -expr
+    Not(Box<Expression>),                     // !expr
+    Name(Identifier),                         // identifier
+    Paren(Box<Expression>),                   // ( expr )
+    ArrayInit(Span, Vec<Expression>),         // [ expr0 , expr1 , ... , exprN ]
+}
+impl Expression {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Index(a, b) | Self::Add(a, b) | Self::Mul(a, b) => a.span().merge(b.span()),
+            Self::Shr(a, b) | Self::AriShr(a, b) | Self::Shl(a, b) | Self::Sub(a, b) => a.span().merge(b.span()),
+            Self::Number(_, _, s) => *s,
+            Self::Cast(t, e) => e.span().merge(t.span()),
+            Self::Neg(v) | Self::Not(v) | Self::Paren(v) | Self::Pointer(v) => v.span(),
+            Self::Name(v) => v.span,
+            Self::ArrayInit(v, _) => *v,
+            Self::Call(v, _) => v.span,
+            _ => todo!(),
+        }
+    }
 }
 
-struct Identifier {
-    value: Span,
-}
-
-struct FuncDef {
-    name: Identifier,
-    inline: bool,
-    args: Vec<Argument>,
-    stt: Vec<Statement>,
-}
-
-struct ConstDef {
-    name: Identifier,
-    ty: Type,
-    init: Box<Expression>,
-}
-
-enum Expression {
-    AssignVar(Identifier, Box<Expression>),                    //ident = expr
-    AssignIndex(Identifier, Box<Expression>, Box<Expression>), //ident[expr1] = expr2
-    AssignPointer(Identifier, Box<Expression>),                //*ident = expr
-    Call(Identifier, Vec<Expression>),                         // name(expr0, expr1, ... , exprN)
-    Add(Box<Expression>, Box<Expression>),                     // expr1 + expr2
-    Sub(Box<Expression>, Box<Expression>),                     // expr1 - expr2
-    Number(i64, Span),                                         // number literal
-    Cast(Type, Box<Expression>),                               // expr as ty
-    Neg(Box<Expression>),                                      //-expr
-    Not(Box<Expression>),                                      // !expr
-    Index(Box<Expression>, Box<Expression>),                   // expr1[expr2]
-    Paren(Box<Expression>),                                    // ( expr )
-    ArrayInit(Vec<Expression>),                                // [ expr0 , expr1 , ... , exprN ]
-}
-
-enum Statement {
+#[derive(Clone, Debug)]
+pub enum Statement {
     Var { name: Identifier, ty: Type, expr: Box<Expression> }, // var name: ty = expr;
     While { cond: Box<Expression>, block: Vec<Statement> },    // while cond { ... }
     DoWhile { block: Vec<Statement>, cond: Box<Expression> },  // do { ... } while cond;
-    Return(Box<Expression>),                                   // return expr;
+    LoopForever(Vec<Statement>),                               // loop { ... }
+    Return(Span, Option<Box<Expression>>),                     // return expr;
+    Assign(Box<Expression>, Box<Expression>),                  // expr1 = expr2;
     If { cond: Box<Expression>, block: Vec<Statement>, els: Option<Vec<Statement>> }, // if cond { block.. } else { els.. }
     Break(Span),                                                                      // break;
     Continue(Span),                                                                   // continue;
