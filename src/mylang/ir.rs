@@ -1,15 +1,16 @@
 use crate::mylang::ast::{ConstDef, Expression, FuncDef, Identifier, Item, Statement, Type};
-use crate::mylang::preproc::SourceMap;
-use crate::mylang::regalloc::{TypedValue, Value, ValueAllocator};
+use crate::mylang::optimizer::ConstProp;
+use crate::mylang::regalloc::{TypedValue, UseKind, Value, ValueAllocator, ValueKind};
 use crate::mylang::LoweringError;
-use druid::Handled::No;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
-use std::process::id;
+use std::fmt::{Debug, Formatter};
+
+pub type ConsVal = u16;
 
 #[derive(Clone, Debug)]
 pub enum IrOp {
-    Const(Value, u16),         //dst, src
+    Const(Value, ConsVal),     //dst, src
     Add(Value, Value, Value),  //dst, left, right
     Sub(Value, Value, Value),  //dst, left, right
     Mul(Value, Value, Value),  //dst, left, right
@@ -32,6 +33,7 @@ pub enum IrOp {
     Goto(Label),
     Return,
     Label(Label),
+    Kill(Value), //drop value register
     CallVoid(usize, Vec<Value>),
     CallValue(usize, Value, Vec<Value>),
 
@@ -56,7 +58,7 @@ impl IrOp {
             CmpLt(p, a, b) | CmpGe(p, a, b) | CmpLts(p, a, b) | CmpGes(p, a, b) => (Some(p), vec![a, b]),
             CmpEq(p, a, b) | CmpNe(p, a, b) => (Some(p), vec![a, b]),
             JumpFalse(v, _) | JumpTrue(v, _) => (None, vec![v]),
-            Goto(_) | Return | Label(_) => (None, vec![]),
+            Goto(_) | Return | Label(_) | Kill(_) => (None, vec![]),
             CallVoid(_, v) => (None, v.iter_mut().collect()),
             CallValue(_, r, v) => (Some(r), v.iter_mut().collect()),
             Not(p, v) | Neg(p, v) | WordToByte(p, v) | ByteToWord(p, v) | ByteExtend(p, v) => (Some(p), vec![v]),
@@ -66,7 +68,51 @@ impl IrOp {
         }
     }
 
-    pub fn binary_op(&self, a: u16, b: u16) -> Option<u16> {
+    pub fn propagate_const(&self, consts: &ConstProp) -> Option<ConsVal> {
+        use IrOp::*;
+        match *self {
+            Add(_, a, b) => Some(consts.get(a)?.wrapping_add(consts.get(b)?)),
+            Sub(_, a, b) => Some(consts.get(a)?.wrapping_sub(consts.get(b)?)),
+            Mul(_, a, b) => Some(consts.get(a)?.wrapping_mul(consts.get(b)?)),
+            Shl(_, a, b) => Some(consts.get(a)?.wrapping_shl(consts.get(b)? as _)),
+            Shr(_, a, b) => Some(consts.get(a)?.wrapping_shr(consts.get(b)? as _)),
+            Ashr(_, a, b) => Some((consts.get(a)? as i16).wrapping_shr(consts.get(b)? as _) as u16),
+            And(_, a, b) => Some(consts.get(a)? & consts.get(b)?),
+            Or(_, a, b) => Some(consts.get(a)? | consts.get(b)?),
+            Xor(_, a, b) => Some(consts.get(a)? ^ consts.get(b)?),
+
+            CmpLt(_, a, b) => Some((consts.get(a)? < consts.get(b)?) as _),
+            CmpGe(_, a, b) => Some((consts.get(a)? >= consts.get(b)?) as _),
+            CmpLts(_, a, b) => Some(((consts.get(a)? as i16) < (consts.get(b)? as i16)) as _),
+            CmpGes(_, a, b) => Some(((consts.get(a)? as i16) >= (consts.get(b)? as i16)) as _),
+            CmpEq(_, a, b) => Some((consts.get(a)? == consts.get(b)?) as _),
+            CmpNe(_, a, b) => Some((consts.get(a)? != consts.get(b)?) as _),
+
+            Not(_, v) => Some(!consts.get(v)?),
+            Neg(_, v) => Some(consts.get(v)?.wrapping_neg()),
+            WordToByte(_, v) => Some(consts.get(v)? & 0xff),
+            HiToByte(_, v) => Some(consts.get(v)? >> 8),
+            ByteToWord(_, v) => Some(consts.get(v)? & 0xff),
+            ByteExtend(_, v) => Some(((consts.get(v)? as i8) as i16) as u16),
+            Copy(_, v) => consts.get(v),
+            _ => None,
+        }
+    }
+
+    pub fn set_const_states(&mut self, consts: &ConstProp) {
+        for val in self.vals_mut().1 {
+            if val.is_locked_const() {
+                continue;
+            }
+            if let Some(Some(c)) = consts.consts.get(&val.index) {
+                val.set_const(*c);
+            } else {
+                val.unset_const();
+            }
+        }
+    }
+
+    pub fn binary_op(&self, a: ConsVal, b: ConsVal) -> Option<ConsVal> {
         use IrOp::*;
         match self {
             Add(..) => Some(a.wrapping_add(b)),
@@ -95,7 +141,7 @@ impl IrOp {
         self.unary_op(0).is_some()
     }
 
-    pub fn unary_op(&self, v: u16) -> Option<u16> {
+    pub fn unary_op(&self, v: ConsVal) -> Option<ConsVal> {
         use IrOp::*;
         match self {
             Not(..) => Some(!v),
@@ -110,11 +156,16 @@ impl IrOp {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Label {
     pub index: u32,
 }
-#[derive(Debug)]
+impl Debug for Label {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "label[{}]", self.index)
+    }
+}
+#[derive(Debug, Clone)]
 pub struct LoweredFunction {
     pub name: Identifier,
     pub inline: bool,
@@ -128,7 +179,7 @@ pub struct Initializer {
     //ast: ConstDef,
     name: Identifier,
     ty: Type,
-    value: Option<u16>,
+    value: Option<ConsVal>,
 }
 
 #[derive(Debug)]
@@ -290,7 +341,6 @@ impl LoweredFunction {
             assert!(ctx.return_val.is_none(), "Function must not return value");
         }
         ctx.drop_scope();
-        assert_eq!(ctx.vals.value_count(), 0, "Value allocator was not cleared");
         let return_value = ctx.return_val.map(|v| v.as_typed(ctx.expected_return.as_ref().unwrap()));
         Ok(Self {
             return_value,
@@ -305,7 +355,7 @@ impl LoweredFunction {
     fn visit_stat(stat: &Statement, ctx: &mut FuncCtx) -> Result<(), LoweringError> {
         match stat {
             Statement::Var { name, ty, expr } => {
-                let value = ctx.vals.make_ty(&ty).bind_scope();
+                let value = ctx.make_ty(&ty).bind_scope();
                 Self::visit_expr(expr, ctx, Some(value.clone()))?;
                 let scope = ctx.scope.last_mut().expect("No scopes?");
                 scope.push((name.clone(), value));
@@ -315,19 +365,19 @@ impl LoweredFunction {
                     let (func_idx, val_args, ret) = Self::begin_call(ctx, name, args)?;
                     //todo inline functions
                     if let Some(ret) = ret {
-                        let place = ctx.vals.make();
+                        let place = ctx.make();
                         ctx.opcodes.push(IrOp::CallValue(func_idx, place, val_args.clone()));
-                        ctx.vals.kill(place);
+                        ctx.kill(place);
                     } else {
                         //void return type
                         ctx.opcodes.push(IrOp::CallVoid(func_idx, val_args.clone()));
                     }
                     for a in val_args.into_iter().rev() {
-                        ctx.vals.kill(a);
+                        ctx.kill(a);
                     }
                 } else {
                     let value = Self::visit_expr(expr, ctx, None)?;
-                    ctx.vals.kill(value.value);
+                    ctx.kill(value.value);
                 }
             }
             Statement::Block(stt) => Self::visit_block(stt, ctx)?,
@@ -335,7 +385,7 @@ impl LoweredFunction {
                 let cond_val = Self::visit_expr(cond, ctx, None)?;
                 let false_lab = ctx.next_label();
                 ctx.opcodes.push(IrOp::JumpFalse(cond_val.value, false_lab));
-                ctx.vals.kill(cond_val.value);
+                ctx.kill(cond_val.value);
 
                 Self::visit_block(block, ctx)?;
                 if let Some(els) = els {
@@ -354,7 +404,7 @@ impl LoweredFunction {
                 ctx.opcodes.push(IrOp::Label(start));
                 let cond_val = Self::visit_expr(cond, ctx, None)?;
                 ctx.opcodes.push(IrOp::JumpFalse(cond_val.value, end));
-                ctx.vals.kill(cond_val.value);
+                ctx.kill(cond_val.value);
 
                 let current_scope = ctx.scope.len();
                 ctx.loop_stack.push((start, end, current_scope));
@@ -384,13 +434,21 @@ impl LoweredFunction {
                 //loop condition
                 let cond_val = Self::visit_expr(cond, ctx, None)?;
                 ctx.opcodes.push(IrOp::JumpTrue(cond_val.value, start));
-                ctx.vals.kill(cond_val.value);
+                ctx.kill(cond_val.value);
                 if is_break {
                     ctx.opcodes.push(IrOp::Label(end));
                 }
             }
             Statement::LoopForever(block) => {
-                todo!()
+                let start = ctx.next_label();
+                let end = ctx.next_label();
+                ctx.opcodes.push(IrOp::Label(start));
+                let current_scope = ctx.scope.len();
+                ctx.loop_stack.push((start, end, current_scope));
+                Self::visit_block(block, ctx)?;
+                ctx.loop_stack.pop();
+                ctx.opcodes.push(IrOp::Goto(start));
+                ctx.opcodes.push(IrOp::Label(end));
             }
             Statement::Break(span) => {
                 let &(_, end, max_scope) = ctx.loop_stack.last().ok_or(LoweringError::BreakOutsideLoop(*span))?;
@@ -418,10 +476,12 @@ impl LoweredFunction {
                 if let Some((expr, ty)) = expr.as_ref().zip(ctx.expected_return.clone()) {
                     //value return
                     if let Some(ret) = ctx.return_val {
-                        let value = Self::visit_expr(expr, ctx, None)?;
-                        ctx.opcodes.push(IrOp::Copy(ret, value.value));
+                        let ret = ret.as_typed(&ty);
+                        Self::visit_expr(expr, ctx, Some(ret))?;
                     } else {
-                        let place = ctx.vals.make_ty(&ty);
+                        let mut place = ctx.make_ty(&ty);
+                        place.value.kind = ValueKind::Ret;
+                        ctx.return_val = Some(place.value);
                         Self::visit_expr(expr, ctx, Some(place))?;
                     }
                     ctx.opcodes.push(IrOp::Return);
@@ -456,8 +516,8 @@ impl LoweredFunction {
                     return Err(LoweringError::ExpectedPointerType(expr.span()));
                 }
                 ctx.opcodes.push(IrOp::PtrStore(p.value, val.value));
-                ctx.vals.kill(p.value);
-                ctx.vals.kill(val.value);
+                ctx.kill(p.value);
+                ctx.kill(val.value);
             }
             Expression::Index(array, index) => {
                 let val = Self::visit_expr(value, ctx, None)?;
@@ -472,15 +532,15 @@ impl LoweredFunction {
                 if !matches!(idx.ty, Type::U16(_)) {
                     return Err(LoweringError::ExpectedUintType(index.span()));
                 }
-                let one = ctx.vals.make();
+                let one = ctx.make();
                 ctx.opcodes.push(IrOp::Const(one, 1));
                 ctx.opcodes.push(IrOp::Shl(idx.value, idx.value, one));
-                ctx.vals.kill(one);
+                ctx.kill(one);
                 ctx.opcodes.push(IrOp::Add(arr.value, arr.value, idx.value));
-                ctx.vals.kill(idx.value);
+                ctx.kill(idx.value);
                 ctx.opcodes.push(IrOp::PtrStore(arr.value, val.value));
-                ctx.vals.kill(arr.value);
-                ctx.vals.kill(val.value);
+                ctx.kill(arr.value);
+                ctx.kill(val.value);
             }
             _ => return Err(LoweringError::UnexpectedPlaceExpression(ass.span())),
         }
@@ -507,7 +567,7 @@ impl LoweredFunction {
                     .or_else(|_| i16::try_from(*v).map(|v| v as u16))
                     .map_err(|_| LoweringError::NumberTooLarge(*n))?;
                 let ty = if *sign { Type::I16(*n) } else { Type::U16(*n) };
-                let place = place.unwrap_or_else(|| ctx.vals.make_ty(&ty));
+                let place = place.unwrap_or_else(|| ctx.make_ty(&ty));
                 ctx.opcodes.push(IrOp::Const(place.value, val));
                 Ok(place)
             }
@@ -522,7 +582,7 @@ impl LoweredFunction {
                         }
                     }
                 } else if let Some(cons) = ctx.get_const(&ident.value) {
-                    let place = place.unwrap_or_else(|| ctx.vals.make_ty(&cons.1));
+                    let place = place.unwrap_or_else(|| ctx.make_ty(&cons.1));
                     ctx.opcodes.push(IrOp::Const(place.value, cons.0));
                     Ok(place)
                 } else {
@@ -582,12 +642,12 @@ impl LoweredFunction {
                 let Type::Ptr(pt) = p.ty else {
                     return Err(LoweringError::ExpectedPointerType(e.span()));
                 };
-                let place = place.unwrap_or_else(|| ctx.vals.make_ty(&pt));
+                let place = place.unwrap_or_else(|| ctx.make_ty(&pt));
                 if !place.ty.type_eq(&pt) {
                     return Err(LoweringError::ExpectingOtherType(place.ty.span()));
                 }
                 ctx.opcodes.push(IrOp::PtrLoad(place.value, p.value));
-                ctx.vals.kill(p.value);
+                ctx.kill(p.value);
                 Ok(place)
             }
             Expression::Index(array, index) => {
@@ -599,23 +659,23 @@ impl LoweredFunction {
                 if !matches!(idx.ty, Type::U16(_)) {
                     return Err(LoweringError::ExpectedUintType(index.span()));
                 }
-                let one = ctx.vals.make();
+                let one = ctx.make();
                 ctx.opcodes.push(IrOp::Const(one, 1));
                 ctx.opcodes.push(IrOp::Shl(idx.value, idx.value, one));
-                ctx.vals.kill(one);
+                ctx.kill(one);
                 ctx.opcodes.push(IrOp::Add(val.value, val.value, idx.value));
-                ctx.vals.kill(idx.value);
-                let place = place.unwrap_or_else(|| ctx.vals.make_ty(&pt));
+                ctx.kill(idx.value);
+                let place = place.unwrap_or_else(|| ctx.make_ty(&pt));
                 if !place.ty.type_eq(&pt) {
                     return Err(LoweringError::ExpectingOtherType(place.ty.span()));
                 }
                 ctx.opcodes.push(IrOp::PtrLoad(place.value, val.value));
-                ctx.vals.kill(val.value);
+                ctx.kill(val.value);
                 Ok(place)
             }
             Expression::Cast(ty, expr) => {
                 let val = Self::visit_expr(expr, ctx, None)?;
-                let place = place.unwrap_or_else(|| ctx.vals.make_ty(&ty));
+                let place = place.unwrap_or_else(|| ctx.make_ty(&ty));
                 let vs = val.ty.size_of();
                 let ps = ty.size_of();
                 let op = match (val.ty.signed(), ty.signed()) {
@@ -631,21 +691,21 @@ impl LoweredFunction {
                     _ => IrOp::Copy(place.value, val.value),
                 };
                 ctx.opcodes.push(op);
-                ctx.vals.kill(val.value);
+                ctx.kill(val.value);
                 Ok(place)
             }
             Expression::Not(expr) => {
                 let val = Self::visit_expr(expr, ctx, None)?;
-                let place = place.unwrap_or_else(|| ctx.vals.make_ty(&val.ty));
+                let place = place.unwrap_or_else(|| ctx.make_ty(&val.ty));
                 ctx.opcodes.push(IrOp::Not(place.value, val.value));
-                ctx.vals.kill(val.value);
+                ctx.kill(val.value);
                 Ok(place)
             }
             Expression::Neg(expr) => {
                 let val = Self::visit_expr(expr, ctx, None)?;
-                let place = place.unwrap_or_else(|| ctx.vals.make_ty(&val.ty));
+                let place = place.unwrap_or_else(|| ctx.make_ty(&val.ty));
                 ctx.opcodes.push(IrOp::Neg(place.value, val.value));
-                ctx.vals.kill(val.value);
+                ctx.kill(val.value);
                 Ok(place)
             }
             Expression::Call(name, args_expr) => {
@@ -653,10 +713,10 @@ impl LoweredFunction {
                 //todo inline functions
                 //return value
                 if let Some(ret) = ret {
-                    let place = place.unwrap_or_else(|| ctx.vals.make_ty(&ret));
+                    let place = place.unwrap_or_else(|| ctx.make_ty(&ret));
                     ctx.opcodes.push(IrOp::CallValue(func_idx, place.value, val_args.clone()));
                     for a in val_args.into_iter().rev() {
-                        ctx.vals.kill(a);
+                        ctx.kill(a);
                     }
                     Ok(place)
                 } else {
@@ -703,13 +763,13 @@ impl LoweredFunction {
         }
         //todo type of whole expr
         let ty = a.ty;
-        let place = place.unwrap_or_else(|| ctx.vals.make_ty(&ty));
+        let place = place.unwrap_or_else(|| ctx.make_ty(&ty));
         if !place.ty.type_eq(&ty) {
             return Err(LoweringError::TypesDontMatch(ty.span(), place.ty.span()));
         }
         ctx.opcodes.push(func(place.value, a.value, b.value));
-        ctx.vals.kill(a.value);
-        ctx.vals.kill(b.value);
+        ctx.kill(a.value);
+        ctx.kill(b.value);
         Ok(place)
     }
     fn bin_eq(
@@ -726,13 +786,13 @@ impl LoweredFunction {
         }
         //todo type of whole expr
         let ty = a.ty;
-        let place = place.unwrap_or_else(|| ctx.vals.make_ty(&ty));
+        let place = place.unwrap_or_else(|| ctx.make_ty(&ty));
         if !place.ty.type_eq(&ty) {
             return Err(LoweringError::TypesDontMatch(ty.span(), place.ty.span()));
         }
         ctx.opcodes.push(func(ty.signed(), place.value, a.value, b.value));
-        ctx.vals.kill(a.value);
-        ctx.vals.kill(b.value);
+        ctx.kill(a.value);
+        ctx.kill(b.value);
         Ok(place)
     }
 }
@@ -765,15 +825,26 @@ impl FuncCtx<'_> {
     }
     pub fn drop_scope(&mut self) {
         let scope = self.scope.pop().expect("Scope stack is empty");
-        for (_, val) in scope.into_iter().rev() {
+        for (_, mut val) in scope.into_iter().rev() {
             self.vals.kill_scoped(val.value); //kills scope bound values
+            val.value.use_kind = UseKind::Drop;
+            self.opcodes.push(IrOp::Kill(val.value));
         }
     }
-    pub fn get_const(&self, name: &str) -> Option<(u16, Type)> {
+    pub fn get_const(&self, name: &str) -> Option<(ConsVal, Type)> {
         self.consts
             .iter()
             .find(|c| c.name.value == name)
             .map(|c| (c.value.expect("Consts should be initialized ath this stage"), c.ty.clone()))
+    }
+    pub fn make(&mut self) -> Value {
+        self.vals.make()
+    }
+    pub fn make_ty(&mut self, ty: &Type) -> TypedValue {
+        TypedValue { value: self.make(), ty: ty.clone() }
+    }
+    pub fn kill(&mut self, value: Value) {
+        self.vals.kill(value);
     }
 }
 
@@ -782,7 +853,7 @@ impl Initializer {
         &mut self,
         ast: &ConstDef,
         symbols: &SymbolTable,
-        values: &HashMap<usize, (u16, Type)>,
+        values: &HashMap<usize, (ConsVal, Type)>,
     ) -> Result<(), Option<LoweringError>> {
         let (value, typ) = Self::visit_expr(&ast.init, symbols, values)?;
         if !typ.type_eq(&self.ty) {
@@ -795,8 +866,8 @@ impl Initializer {
     fn visit_expr(
         expr: &Expression,
         s: &SymbolTable,
-        v: &HashMap<usize, (u16, Type)>,
-    ) -> Result<(u16, Type), Option<LoweringError>> {
+        v: &HashMap<usize, (ConsVal, Type)>,
+    ) -> Result<(ConsVal, Type), Option<LoweringError>> {
         match expr {
             Expression::Paren(e) => Ok(Self::visit_expr(&*e, s, v)?),
             Expression::Not(e) => {
@@ -832,9 +903,9 @@ impl Initializer {
         a: &Expression,
         b: &Expression,
         s: &SymbolTable,
-        v: &HashMap<usize, (u16, Type)>,
-        func: impl FnOnce(u16, u16) -> u16,
-    ) -> Result<(u16, Type), Option<LoweringError>> {
+        v: &HashMap<usize, (ConsVal, Type)>,
+        func: impl FnOnce(ConsVal, ConsVal) -> ConsVal,
+    ) -> Result<(ConsVal, Type), Option<LoweringError>> {
         let (a, at) = Self::visit_expr(a, s, v)?;
         let (b, bt) = Self::visit_expr(b, s, v)?;
         if !at.type_eq(&bt) {
@@ -861,6 +932,9 @@ mod tests {
     fn mock_name(s: &str) -> Identifier {
         Identifier { value: s.to_string(), span: S }
     }
+    fn mock_arg(s: &str, ty: Type) -> Argument {
+        Argument { name: mock_name(s), ty }
+    }
 
     fn num(val: i64) -> Box<Expression> {
         Box::new(Number(val, false, S))
@@ -875,9 +949,23 @@ mod tests {
             Item::Const(ConstDef { name: mock_name("C1"), ty: U16, init: Box::new(Add(num(4), var("C2"))) }),
             Item::Const(ConstDef { name: mock_name("C2"), ty: U16, init: Box::new(Add(num(5), num(11))) }),
             Item::Func(FuncDef {
+                name: mock_name("op_func"),
+                ret: Some(U16),
+                args: vec![mock_arg("a", U16), mock_arg("b", U16)],
+                inline: false,
+                stt: vec![
+                    Statement::If {
+                        cond: Box::new(Lo(var("a"), var("b"))), //todo type inferred here is signed
+                        els: None,
+                        block: vec![Statement::Return(S, Some(num(42)))],
+                    },
+                    Statement::Return(S, Some(Box::new(Sub(var("a"), var("b"))))),
+                ],
+            }),
+            Item::Func(FuncDef {
                 name: mock_name("test_func"),
                 ret: None,
-                args: vec![Argument { name: mock_name("arg1"), ty: U16 }],
+                args: vec![mock_arg("arg1", U16)],
                 inline: false,
                 stt: vec![
                     Statement::Var { name: mock_name("count"), ty: U16, expr: Box::new(Add(num(0), num(1))) },
@@ -888,7 +976,10 @@ mod tests {
                     },
                     Statement::While {
                         cond: Box::new(Ne(var("count"), var("cond"))),
-                        block: vec![Statement::Assign(var("count"), Box::new(Sub(var("count"), num(1))))],
+                        block: vec![Statement::Assign(
+                            var("count"),
+                            Box::new(Call(mock_name("op_func"), vec![*num(3), *num(1)])), //todo const arguments don't optimize jumps
+                        )],
                     },
                 ],
             }),

@@ -1,8 +1,6 @@
-use crate::mylang::ir::{IrOp, Label, Lowered, LoweredFunction};
+use crate::mylang::ir::{ConsVal, IrOp, Label, Lowered, LoweredFunction};
 use crate::mylang::regalloc::Value;
-use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::convert::TryInto;
 use std::rc::Rc;
 
 pub struct OptimizerOptions {
@@ -52,9 +50,15 @@ pub fn optimize_ir(lowered: &mut Lowered, options: OptimizerOptions) {
             optimize_function(func);
         }
         let to_inline = options.select_to_inline(&lowered.functions);
-        for func in &mut lowered.functions {
-            inline_all(func, &to_inline);
+        let list = lowered.functions.clone();
+        for func in lowered.functions.iter_mut() {
+            inline_all(func, &list, &to_inline);
+            println!("Inlined opcodes of {}:", func.name.value);
+            for (i, v) in func.opcodes.iter().enumerate() {
+                println!("{i} = {v:?}");
+            }
         }
+        println!("Post inline optimization");
         for func in &mut lowered.functions {
             optimize_function(func);
         }
@@ -171,9 +175,10 @@ impl LabelInfo {
 
 #[derive(Default, Debug)]
 struct ValueInfo {
-    reads: Vec<(usize, usize)>,
+    reads: Vec<(usize, usize, bool)>,
     argument: bool,
     return_val: bool,
+    kills: Vec<usize>,
     writes: Vec<usize>,
 }
 
@@ -183,70 +188,101 @@ impl ValueInfo {
         for arg in &func.args {
             vals.insert(
                 arg.index,
-                ValueInfo { argument: true, return_val: false, writes: Vec::new(), reads: Vec::new() },
+                ValueInfo { argument: true, return_val: false, writes: vec![], kills: vec![], reads: vec![] },
             );
         }
         if let Some(ret) = &func.return_value {
             vals.insert(
                 ret.value.index,
-                ValueInfo { argument: false, return_val: true, reads: Vec::new(), writes: Vec::new() },
+                ValueInfo { argument: false, return_val: true, reads: vec![], kills: vec![], writes: vec![] },
             );
         }
         for (i, op) in func.opcodes.iter_mut().enumerate() {
+            if let IrOp::Kill(v) = op {
+                vals.entry(v.index).or_insert(ValueInfo::default()).kills.push(i);
+                continue;
+            }
             let ops = format!("{op:?}");
             let (dst, src) = op.vals_mut();
             //println!("{dst:?}: {src:?} op: {ops}");
             if let Some(dst) = dst {
-                let info = vals.entry(dst.index).or_insert(ValueInfo::default());
-                info.writes.push(i);
+                vals.entry(dst.index).or_insert(ValueInfo::default()).writes.push(i);
             }
             for (j, src) in src.iter().enumerate() {
+                if src.is_locked_const() {
+                    continue;
+                }
                 let info = vals.entry(src.index).or_insert(ValueInfo::default());
-                info.reads.push((i, j));
+                let is_const = src.get_const().is_some();
+                info.reads.push((i, j, is_const));
             }
         }
+        //remove entry for locked constants
+        vals.remove(&u32::MAX);
         vals
     }
 
-    pub fn reindex_values(func: &mut LoweredFunction, offset: u32) -> u32 {
-        use IrOp::*;
+    pub fn any_const_read(&self) -> bool {
+        self.reads.iter().any(|(_, _, c)| *c)
+    }
+
+    pub fn reindex_values(
+        func: &mut LoweredFunction,
+        offset: u32,
+        args_ret: Option<(Vec<Value>, Option<Value>)>,
+    ) -> u32 {
+        fn replace_index(value: &mut Value, curr_index: &mut u32, changed: &mut BTreeMap<u32, Value>) {
+            let index = changed.entry(value.index).or_insert_with(|| {
+                let mut val = *value;
+                val.index = *curr_index;
+                *curr_index += 1;
+                val
+            });
+            *value = *index;
+        }
+
         let mut curr_index = offset;
         let values = ValueInfo::scan(func).into_iter().collect::<BTreeMap<_, _>>();
         let mut changed = BTreeMap::new();
-        for arg in func.args.iter_mut() {
-            changed.insert(arg.index, curr_index);
-            arg.index = curr_index;
-            curr_index += 1;
+        if let Some((new_args, new_ret)) = args_ret {
+            assert_eq!(new_args.len(), func.args.len());
+            assert_eq!(new_ret.is_some(), func.return_value.is_some());
+            for (arg, new) in func.args.iter_mut().zip(new_args) {
+                changed.insert(arg.index, new);
+                *arg = new;
+            }
+
+            if let Some((ret, new)) = func.return_value.as_mut().zip(new_ret) {
+                changed.insert(ret.value.index, new);
+                ret.value = new;
+            }
+        } else {
+            for arg in func.args.iter_mut() {
+                let mut val = *arg;
+                val.index = curr_index;
+                changed.insert(arg.index, val);
+                arg.index = curr_index;
+                curr_index += 1;
+            }
+
+            if let Some(ret) = &mut func.return_value {
+                replace_index(&mut ret.value, &mut curr_index, &mut changed);
+            }
         }
 
         for (index, info) in values {
-            for (op_idx, src_idx) in &info.reads {
+            for (op_idx, src_idx, _is_const) in &info.reads {
                 let value = &mut func.opcodes[*op_idx].vals_mut().1[*src_idx];
-                let index = changed.entry(value.index).or_insert_with(|| {
-                    let idx = curr_index;
-                    curr_index += 1;
-                    idx
-                });
-                value.index = *index;
+                replace_index(value, &mut curr_index, &mut changed);
             }
             for dst_idx in &info.writes {
                 let value = func.opcodes[*dst_idx].vals_mut().0.unwrap();
-                let index = changed.entry(value.index).or_insert_with(|| {
-                    let idx = curr_index;
-                    curr_index += 1;
-                    idx
-                });
-                value.index = *index;
+                replace_index(value, &mut curr_index, &mut changed);
             }
-        }
-
-        if let Some(ret) = &mut func.return_value {
-            let index = changed.entry(ret.value.index).or_insert_with(|| {
-                let idx = curr_index;
-                curr_index += 1;
-                idx
-            });
-            ret.value.index = *index;
+            for src_idx in &info.kills {
+                let IrOp::Kill(value) = &mut func.opcodes[*src_idx] else { unreachable!() };
+                replace_index(value, &mut curr_index, &mut changed);
+            }
         }
         curr_index - offset
     }
@@ -262,8 +298,11 @@ impl ValueInfo {
 
             to_remove.clear();
             for (index, info) in &values {
-                if info.writes.is_empty() && !info.argument {
-                    panic!("Value never written");
+                if info.writes.is_empty() && !info.argument && info.kills.is_empty() {
+                    panic!("Value never written {index} {info:?}");
+                }
+                if info.writes.is_empty() && !info.kills.is_empty() {
+                    to_remove.extend(info.kills.iter().copied());
                 }
                 if info.reads.is_empty() && !info.return_val {
                     to_remove.extend(info.writes.iter().copied());
@@ -281,8 +320,8 @@ impl ValueInfo {
 }
 
 #[derive(Default, Clone)]
-struct ConstProp {
-    consts: Rc<HashMap<u32, Option<u16>>>,
+pub struct ConstProp {
+    pub consts: Rc<HashMap<u32, Option<ConsVal>>>,
 }
 
 impl ConstProp {
@@ -290,7 +329,7 @@ impl ConstProp {
         let mut consts = std::iter::repeat_with(|| None).take(opcodes.len()).collect::<Vec<_>>().into_boxed_slice();
         let mut backup = consts.clone();
         loop {
-            propagate_consts_once(opcodes, &mut consts);
+            ConstProp::propagate_once(opcodes, &mut consts);
             if backup == consts {
                 break;
             }
@@ -302,6 +341,7 @@ impl ConstProp {
         }
 
         Self::fill_constants(opcodes, &consts);
+        Self::lock_const_reads(opcodes);
     }
 
     fn fill_constants(opcodes: &mut Vec<IrOp>, consts: &[Option<u16>]) {
@@ -336,8 +376,82 @@ impl ConstProp {
             opcodes.remove(rem);
         }
     }
+
+    fn lock_const_reads(opcodes: &mut [IrOp]) {
+        for val in opcodes.iter_mut().flat_map(|v| v.vals_mut().1) {
+            val.set_lock_if_const();
+        }
+    }
+
+    fn propagate_once(opcodes: &mut Vec<IrOp>, x: &mut [Option<u16>]) {
+        let labels = LabelInfo::scan(opcodes);
+        let mut label_states = HashMap::new();
+        walk_opcodes(opcodes, &labels, ConstProp::default(), |idx, op, state, jump| {
+            op.set_const_states(state);
+            match *op {
+                IrOp::Const(v, val) => _ = state.consts().insert(v.index, Some(val)),
+                IrOp::JumpTrue(v, _) | IrOp::JumpFalse(v, _) => {
+                    if let Some(value) = state.consts.get(&v.index).copied().flatten() {
+                        x[idx] = Some(value);
+                    } else {
+                        x[idx] = None;
+                    }
+                }
+                IrOp::Label(lab) => match label_states.get_mut(&lab) {
+                    None => {
+                        let info =
+                            LabelState { prev_consts: ConstProp::clone(state), jump_source: HashSet::from([jump]) };
+                        label_states.insert(lab, info);
+                    }
+                    Some(info) if !info.jump_source.contains(&jump) => {
+                        info.jump_source.insert(jump);
+                        if info.prev_consts.consts != state.consts {
+                            for (curr_key, curr_vals) in state.consts.iter() {
+                                if let Some(prev_vals) = info.prev_consts.consts.get(curr_key) {
+                                    //if states are different (they contain different values, or one is None which means many values)
+                                    if curr_vals != prev_vals {
+                                        //set state to None - indicates many possible values
+                                        info.prev_consts.consts().insert(*curr_key, None);
+                                    }
+                                    //else no action is required
+                                } else {
+                                    //update to new constant's state
+                                    info.prev_consts.consts().insert(*curr_key, *curr_vals);
+                                }
+                            }
+                            *state = info.prev_consts.clone();
+                        }
+                    }
+                    _ => return false,
+                },
+
+                _ => {
+                    let result = op.propagate_const(state);
+                    x[idx] = result;
+                    if let Some(val) = op.vals_mut().0 {
+                        match (state.consts.get(&val.index), result) {
+                            (Some(Some(c)), Some(r)) if *c != r => _ = state.consts().insert(val.index, None), //different consts
+                            (Some(Some(_)), Some(_)) => {} //same consts
+                            (Some(Some(_)), None) => _ = state.consts().insert(val.index, None), //result not const
+                            (Some(None), _) => {}          //multiple values already in dst
+                            (None, Some(r)) => _ = state.consts().insert(val.index, Some(r)), //first const
+                            (None, None) => {}
+                        }
+                    }
+                }
+            }
+            true
+        });
+    }
+
     fn consts(&mut self) -> &mut HashMap<u32, Option<u16>> {
         Rc::make_mut(&mut self.consts)
+    }
+    pub fn get(&self, value: Value) -> Option<ConsVal> {
+        if let Some(v) = value.get_const() {
+            return Some(v);
+        }
+        self.consts.get(&value.index).copied().flatten()
     }
 }
 
@@ -345,115 +459,6 @@ impl ConstProp {
 struct LabelState {
     prev_consts: ConstProp,
     jump_source: HashSet<usize>,
-}
-fn propagate_consts_once(opcodes: &mut Vec<IrOp>, x: &mut [Option<u16>]) {
-    let labels = LabelInfo::scan(opcodes);
-    let mut label_states = HashMap::new();
-    walk_opcodes(opcodes, &labels, ConstProp::default(), |idx, op, state, jump| {
-        if const_prop_bin_op(op, state, &mut x[idx]) {
-            return true;
-        }
-        if const_prop_unary_op(op, state, &mut x[idx]) {
-            return true;
-        }
-        match *op {
-            IrOp::Const(v, val) => _ = state.consts().insert(v.index, Some(val)),
-            IrOp::JumpTrue(v, _) | IrOp::JumpFalse(v, _) => {
-                if let Some(value) = state.consts.get(&v.index).copied().flatten() {
-                    x[idx] = Some(value);
-                } else {
-                    x[idx] = None;
-                }
-            }
-            IrOp::Label(lab) => match label_states.get_mut(&lab) {
-                None => {
-                    let info = LabelState { prev_consts: ConstProp::clone(state), jump_source: HashSet::from([jump]) };
-                    label_states.insert(lab, info);
-                }
-                Some(info) if !info.jump_source.contains(&jump) => {
-                    info.jump_source.insert(jump);
-                    if info.prev_consts.consts != state.consts {
-                        for (curr_key, curr_vals) in state.consts.iter() {
-                            if let Some(prev_vals) = info.prev_consts.consts.get(curr_key) {
-                                //if states are different (they contain different values, or one is None which means many values)
-                                if curr_vals != prev_vals {
-                                    //set state to None - indicates many possible values
-                                    info.prev_consts.consts().insert(*curr_key, None);
-                                }
-                                //else no action is required
-                            } else {
-                                //update to new constant's state
-                                info.prev_consts.consts().insert(*curr_key, *curr_vals);
-                            }
-                        }
-                        *state = info.prev_consts.clone();
-                    }
-                }
-                _ => return false,
-            },
-
-            _ => {}
-        }
-        true
-    });
-}
-
-fn const_prop_bin_op(op: &mut IrOp, state: &mut ConstProp, x: &mut Option<u16>) -> bool {
-    if op.is_binary_op() {
-        let (a, b) = {
-            let mut iter = op.vals_mut().1.into_iter();
-            let a = iter.next().unwrap();
-            (a, iter.next().unwrap())
-        };
-        let ab = state.consts.get(&a.index).zip(state.consts.get(&b.index));
-        let ab = ab.and_then(|(&a, &b)| a.zip(b));
-        let dst = *op.vals_mut().0.unwrap();
-
-        if let Some((a, b)) = ab {
-            let value = op.binary_op(a, b).unwrap();
-
-            if state.consts.get(&dst.index) != Some(&Some(value)) {
-                state.consts().insert(dst.index, Some(value));
-            }
-            *x = Some(value);
-        } else {
-            *x = None;
-            // if previously was constant, set this state to unstable
-            match state.consts.get(&dst.index) {
-                None => {}
-                Some(&None) => {}
-                Some(&Some(_)) => _ = state.consts().insert(dst.index, None),
-            }
-        }
-        return true;
-    }
-    false
-}
-
-fn const_prop_unary_op(op: &mut IrOp, state: &mut ConstProp, x: &mut Option<u16>) -> bool {
-    if op.is_unary_op() {
-        let dst = *op.vals_mut().0.unwrap();
-        let a = op.vals_mut().1.pop().unwrap();
-
-        if let Some(a) = state.consts.get(&a.index).copied().flatten() {
-            let value = op.unary_op(a).unwrap();
-
-            if state.consts.get(&dst.index) != Some(&Some(value)) {
-                state.consts().insert(dst.index, Some(value));
-            }
-            *x = Some(value);
-        } else {
-            *x = None;
-            // if previously was constant, set this state to unstable
-            match state.consts.get(&dst.index) {
-                None => {}
-                Some(&None) => {}
-                Some(&Some(_)) => _ = state.consts().insert(dst.index, None),
-            }
-        }
-        return true;
-    }
-    false
 }
 
 fn walk_opcodes<T: Clone>(
@@ -494,10 +499,40 @@ fn walk_opcodes<T: Clone>(
     }
 }
 
-fn inline_all(func: &mut LoweredFunction, inlines: &HashSet<usize>) -> bool {
+fn inline_all(func: &mut LoweredFunction, list: &[LoweredFunction], inlines: &HashSet<usize>) -> bool {
     let label_count = LabelInfo::reindex_labels(&mut func.opcodes, 0);
-    let value_count = ValueInfo::reindex_values(func, 0);
+    let value_count = ValueInfo::reindex_values(func, 0, None);
     println!("label_count: {label_count}, value_count: {value_count}");
+
+    let calls_to_inline = func.opcodes.iter().enumerate().filter_map(|(i, op)| match op {
+        IrOp::CallVoid(idx, args) if inlines.contains(idx) => Some((i, &list[*idx], None, args.clone())),
+        IrOp::CallValue(idx, ret, args) if inlines.contains(idx) => Some((i, &list[*idx], Some(*ret), args.clone())),
+        _ => None,
+    });
+    let calls_to_inline = calls_to_inline.collect::<Vec<_>>();
+
+    let mut label_offset = label_count;
+    let mut value_offset = value_count;
+    for (index, to_inline, ret, args) in calls_to_inline.into_iter().rev() {
+        let mut to_inline = to_inline.clone();
+        //reindex all labels and values to not collide with current function's ones
+        label_offset += LabelInfo::reindex_labels(&mut to_inline.opcodes, label_offset);
+        value_offset += ValueInfo::reindex_values(&mut to_inline, value_offset, Some((args, ret)));
+
+        //replace return opcodes with jumps to label at the end of functions
+        let return_label = Label { index: label_offset };
+        label_offset += 1;
+        for v in to_inline.opcodes.iter_mut() {
+            if matches!(v, IrOp::Return) {
+                *v = IrOp::Goto(return_label);
+            }
+        }
+        to_inline.opcodes.push(IrOp::Label(return_label));
+
+        //insert function's opcodes in place of a call
+        func.opcodes.splice(index..=index, to_inline.opcodes);
+    }
+
     //2. reindex values
     //
 

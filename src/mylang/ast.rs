@@ -1,4 +1,4 @@
-use crate::mylang::preproc::{is_whitespace, Span};
+use crate::mylang::preproc::*;
 use std::mem::discriminant;
 
 #[derive(Clone, Debug)]
@@ -137,8 +137,8 @@ peg::parser!(pub grammar parser() for str {
     // // helpers *******************************************************
     // rule any_not_paren(ann: &LineAnnotation)->TextSpan
     //     = [_][_] { TextSpan::default() }
-    // rule ident_start() = ch:$([_]) {? if is_ident_start(ch.chars().next().unwrap()) {Ok(())} else {Err("Identifier start")}}
-    // rule ident_part() = ch:$([_]) {? if is_ident_part(ch.chars().next().unwrap()) {Ok(())} else {Err("Identifier part")}}
+    rule ident_start() = ch:$([_]) {? if is_label_start(ch.chars().next().unwrap()) {Ok(())} else {Err("Identifier start")}}
+    rule ident_part() = ch:$([_]) {? if is_label_part(ch.chars().next().unwrap()) {Ok(())} else {Err("Identifier part")}}
     // ignorable *****************************************************
     rule _() =  quiet!{skip()}
     rule skip() = (whitespace() / new_line() / oneline_comment() / multiline_comment())*

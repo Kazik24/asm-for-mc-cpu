@@ -1,4 +1,3 @@
-use crate::*;
 use druid::piet::TextStorage;
 use std::fmt::{Debug, Display, Formatter, Write};
 use std::sync::{Arc, Mutex};
@@ -485,25 +484,25 @@ pub fn is_whitespace(c: char) -> bool {
     // Other whitespace from General Punctuation...
     c <= 0x200a || c == 0x2028 || c == 0x2029 || c == 0x205f || c == 0x3000 // ...or CJK Symbols and Punctuation?
 }
-fn is_letter(c: char) -> bool {
+pub fn is_letter(c: char) -> bool {
     c.is_alphabetic()
 }
-fn is_label_start(c: char) -> bool {
+pub fn is_label_start(c: char) -> bool {
     is_letter(c) || c == '_'
 }
-fn is_label_part(c: char) -> bool {
+pub fn is_label_part(c: char) -> bool {
     is_label_start(c) || c.is_numeric()
 }
-fn is_number_start(c: char) -> bool {
+pub fn is_number_start(c: char) -> bool {
     ('0'..='9').contains(&c)
 }
-fn is_number_part(c: char) -> bool {
+pub fn is_number_part(c: char) -> bool {
     is_number_start(c) || is_letter(c) || c == '_'
 }
-fn is_exponent_spec(c: char) -> bool {
+pub fn is_exponent_spec(c: char) -> bool {
     c == 'e' || c == 'E'
 }
-fn is_point_sep(c: char) -> bool {
+pub fn is_point_sep(c: char) -> bool {
     c == '.'
 }
 
