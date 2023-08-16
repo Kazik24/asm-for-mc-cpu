@@ -1,5 +1,5 @@
 use crate::mylang::ast::Type;
-use crate::mylang::ir::ConsVal;
+use crate::mylang::ir::ConstVal;
 use std::fmt::{Debug, Formatter};
 
 pub struct ValueAllocator {
@@ -12,7 +12,7 @@ pub struct Value {
     pub kind: ValueKind,
     pub use_kind: UseKind,
     is_const: bool,
-    const_val: ConsVal,
+    const_val: ConstVal,
 }
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ValueKind {
@@ -63,7 +63,7 @@ impl Value {
         self.kind = ValueKind::Arg;
         self
     }
-    pub fn set_const(&mut self, value: ConsVal) {
+    pub fn set_const(&mut self, value: ConstVal) {
         self.is_const = true;
         self.const_val = value;
     }
@@ -78,7 +78,7 @@ impl Value {
             self.index = u32::MAX;
         }
     }
-    pub fn get_const(&self) -> Option<ConsVal> {
+    pub fn get_const(&self) -> Option<ConstVal> {
         self.is_const.then_some(self.const_val)
     }
     pub fn is_bound(&self) -> bool {
@@ -124,4 +124,10 @@ impl ValueAllocator {
     pub fn kill_scoped(&mut self, value: Value) {}
 }
 
-pub struct RegAlloc {}
+pub struct RegAlloc {
+    allocated: Vec<Option<u32>>,
+}
+
+impl RegAlloc {
+    pub fn fork() {}
+}

@@ -70,7 +70,7 @@ To choose higher or lower byte in register append H or L (upper or lower case) t
 name e.g: `r1H` is higher byte of register 1 and `r2L` is lower byte of register 2.
 
 * `NOP` - no operation, alias to `ADD r0,r0,r0`
-* `DW #value` - define 16-bit value at this place in program
+* `DW #value` - define 16-bit value at this place in program, you can also place `@label` here to put resolved address of label at this place
 * `ADD dst,arg1,arg2` - add two registers and store value in register
 * `SUB dst,arg1,arg2` - subtract two registers and store value in register
 * `ADS dst,arg1,#arg2` - add register to small signed immediate value and store

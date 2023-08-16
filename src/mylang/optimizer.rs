@@ -1,21 +1,22 @@
-use crate::mylang::ir::{ConsVal, IrOp, Label, Lowered, LoweredFunction};
+use crate::mylang::ir::{ConstVal, IrOp, Label, Lowered, LoweredFunction};
 use crate::mylang::regalloc::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
+#[derive(Copy, Clone)]
 pub struct OptimizerOptions {
     /// Hard inline threshold, if function is called less or eq number of times as this value,
     /// then it is inlined unconditionally.
-    max_inlines_t1: u32,
+    pub max_inlines_t1: u32,
     /// If function has eq or less opcodes that that AND is called eq or less times than `max_inlines_t2`
     /// then it is inlined.
-    max_inline_ir_ops: u32,
+    pub max_inline_ir_ops: u32,
     /// If any function is called more times than that, do not inline it.
-    max_inlines_t2: u32,
+    pub max_inlines_t2: u32,
     /// Max number of iterations for which try to unroll loop
-    max_loop_unroll: u32,
+    pub max_loop_unroll: u32,
     /// Optimization passes count
-    passes: u32,
+    pub passes: u32,
 }
 
 impl OptimizerOptions {
@@ -30,10 +31,14 @@ impl OptimizerOptions {
         func_counts
             .iter()
             .filter_map(|(&idx, &count)| {
-                let ir_len = func[idx].opcodes.len() as u32;
                 if count <= self.max_inlines_t1 {
-                    Some(idx)
-                } else if count <= self.max_inlines_t2 && ir_len <= self.max_inline_ir_ops {
+                    return Some(idx);
+                }
+                let ir_len = func[idx].opcodes.iter().map(|op| match op {
+                    IrOp::Label(_) | IrOp::Kill(_) => 0, //don't count this opcodes
+                    _ => 1,
+                });
+                if count <= self.max_inlines_t2 && ir_len.sum::<u32>() <= self.max_inline_ir_ops {
                     Some(idx)
                 } else {
                     None
@@ -48,6 +53,7 @@ pub fn optimize_ir(lowered: &mut Lowered, options: OptimizerOptions) {
         println!("Pass: {i}");
         for func in &mut lowered.functions {
             optimize_function(func);
+            assert_optimized(&mut func.opcodes);
         }
         let to_inline = options.select_to_inline(&lowered.functions);
         let list = lowered.functions.clone();
@@ -61,9 +67,29 @@ pub fn optimize_ir(lowered: &mut Lowered, options: OptimizerOptions) {
         println!("Post inline optimization");
         for func in &mut lowered.functions {
             optimize_function(func);
+            assert_optimized(&mut func.opcodes);
         }
     }
     //todo garbage collect unused functions
+}
+
+fn assert_optimized(opcodes: &mut [IrOp]) {
+    for (i, op) in opcodes.iter_mut().enumerate() {
+        if !op.is_unary_op() && !op.is_binary_op() {
+            if let (IrOp::JumpFalse(v, _) | IrOp::JumpTrue(v, _)) = op {
+                if v.get_const().is_some() {
+                    panic!("constant in jump [{i}]: {op:?}");
+                }
+            }
+            continue;
+        }
+        let args = op.vals_mut().1;
+        let len = args.len();
+        let c = op.vals_mut().1.into_iter().filter(|v| v.get_const().is_some()).count();
+        if c == len {
+            panic!("all values are constant [{i}]: {op:?}");
+        }
+    }
 }
 
 fn get_call_counts(functions: &[LoweredFunction]) -> HashMap<usize, u32> {
@@ -136,6 +162,7 @@ impl LabelInfo {
         //remove jumps immediately followed by it's label
         let mut remove_ops = BTreeSet::new();
         let labels = LabelInfo::scan(opcodes);
+        let mut remap = HashMap::new();
         for (i, pair) in opcodes.windows(2).enumerate() {
             match pair {
                 [Goto(a) | JumpTrue(_, a) | JumpFalse(_, a), IrOp::Label(b)] if a == b => {
@@ -143,6 +170,11 @@ impl LabelInfo {
                     if labels[a].jumps.len() == 1 {
                         remove_ops.insert(i + 1); //remove label if it was only jump
                     }
+                }
+                //case when label a can point immediately to b without indirection jump
+                [IrOp::Label(a), IrOp::Goto(b)] if a != b => {
+                    remove_ops.insert(i);
+                    remap.insert(*a, *b);
                 }
                 _ => {}
             }
@@ -160,6 +192,14 @@ impl LabelInfo {
         }
         while let Some(IrOp::Return) = opcodes.last() {
             opcodes.pop();
+        }
+        //remap jumps to different indexes
+        for op in opcodes {
+            if let (IrOp::Goto(old) | IrOp::JumpTrue(_, old) | IrOp::JumpFalse(_, old)) = op {
+                if let Some(new) = remap.get(old) {
+                    *old = *new
+                }
+            }
         }
     }
 
@@ -321,7 +361,7 @@ impl ValueInfo {
 
 #[derive(Default, Clone)]
 pub struct ConstProp {
-    pub consts: Rc<HashMap<u32, Option<ConsVal>>>,
+    pub consts: Rc<HashMap<u32, Option<ConstVal>>>,
 }
 
 impl ConstProp {
@@ -447,7 +487,7 @@ impl ConstProp {
     fn consts(&mut self) -> &mut HashMap<u32, Option<u16>> {
         Rc::make_mut(&mut self.consts)
     }
-    pub fn get(&self, value: Value) -> Option<ConsVal> {
+    pub fn get(&self, value: Value) -> Option<ConstVal> {
         if let Some(v) = value.get_const() {
             return Some(v);
         }

@@ -1,10 +1,12 @@
 use crate::mylang::preproc::*;
+use crate::mylang::SourceLoader;
 use std::mem::discriminant;
 
 #[derive(Clone, Debug)]
 pub enum Item {
     Func(FuncDef),
     Const(ConstDef),
+    Global(GlobalDef),
 }
 #[derive(Clone, Debug)]
 pub enum Type {
@@ -69,6 +71,14 @@ pub struct ConstDef {
     pub ty: Type,
     pub init: Box<Expression>,
 }
+
+#[derive(Clone, Debug)]
+pub struct GlobalDef {
+    //globals cannot have initializers, their value is undefined at the start of program
+    pub name: Identifier,
+    pub ty: Type,
+}
+
 #[derive(Clone, Debug)]
 pub enum Expression {
     Index(Box<Expression>, Box<Expression>),  // expr1[expr2]
@@ -113,6 +123,9 @@ impl Expression {
     }
 }
 
+#[derive(Debug)]
+pub struct AstError {}
+
 #[derive(Clone, Debug)]
 pub enum Statement {
     Var { name: Identifier, ty: Type, expr: Box<Expression> }, // var name: ty = expr;
@@ -151,3 +164,7 @@ peg::parser!(pub grammar parser() for str {
     rule multiline_comment() = "/*" (!"*/" [_])* "*/"
     rule whitespace() = ch:$([_]) {? if is_whitespace(ch.chars().next().unwrap()) {Ok(())} else {Err("whitespace")}}
 });
+
+pub fn parse_ast(main_file: &str, loader: Box<dyn SourceLoader>) -> (Result<Vec<Item>, Vec<AstError>>, SourceMap) {
+    todo!()
+}

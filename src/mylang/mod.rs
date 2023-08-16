@@ -1,13 +1,37 @@
 mod ast;
+mod codegen;
 mod compiler;
 mod ir;
 mod optimizer;
 mod preproc;
 mod regalloc;
 
+use crate::emulator::Opcode;
+use crate::mylang::ast::parse_ast;
+use crate::mylang::codegen::{generate_code, CodegenOptions};
+use crate::mylang::ir::{Lowered, SymbolTable};
+use crate::mylang::optimizer::{optimize_ir, OptimizerOptions};
 use crate::mylang::preproc::Span;
 pub use compiler::*;
 use std::collections::HashMap;
+
+pub fn compile(main_file: &str, loader: Box<dyn SourceLoader>) -> Result<Vec<Opcode>, CompileErrors> {
+    //parse source files into abstract syntax tree (AST)
+    let (result, sources) = parse_ast(main_file, loader);
+    let result = result.map_err(|e| CompileErrors { errors: e.into_iter().map(|v| format!("{v:?}")).collect() })?;
+
+    //create symbol table and lower into intermediate representation (IR)
+    let (table, ast) = SymbolTable::scan_symbols(&result).unwrap();
+    let mut lowered_ir = Lowered::lower_all(table, &ast).unwrap();
+
+    //high level optimization, e.g inline some functions, calculate const expressions, reduce jumps
+    optimize_ir(&mut lowered_ir, OptimizerOptions::SPEED);
+
+    //generate machine instructions, and perform hardware specific
+    //optimizations (e.g select smaller instructions for short jumps)
+    let code = generate_code(&lowered_ir, CodegenOptions { stack_reg: 14, link_reg: 13 });
+    Ok(code)
+}
 
 pub struct CompileErrors {
     errors: Vec<String>,

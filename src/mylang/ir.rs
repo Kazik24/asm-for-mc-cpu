@@ -1,16 +1,18 @@
-use crate::mylang::ast::{ConstDef, Expression, FuncDef, Identifier, Item, Statement, Type};
+use crate::mylang::ast::{ConstDef, Expression, FuncDef, GlobalDef, Identifier, Item, Statement, Type};
 use crate::mylang::optimizer::ConstProp;
 use crate::mylang::regalloc::{TypedValue, UseKind, Value, ValueAllocator, ValueKind};
 use crate::mylang::LoweringError;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Formatter};
+use std::ops::Range;
+use std::rc::Rc;
 
-pub type ConsVal = u16;
+pub type ConstVal = u16;
 
 #[derive(Clone, Debug)]
 pub enum IrOp {
-    Const(Value, ConsVal),     //dst, src
+    Const(Value, ConstVal),    //dst, src
     Add(Value, Value, Value),  //dst, left, right
     Sub(Value, Value, Value),  //dst, left, right
     Mul(Value, Value, Value),  //dst, left, right
@@ -68,7 +70,7 @@ impl IrOp {
         }
     }
 
-    pub fn propagate_const(&self, consts: &ConstProp) -> Option<ConsVal> {
+    pub fn propagate_const(&self, consts: &ConstProp) -> Option<ConstVal> {
         use IrOp::*;
         match *self {
             Add(_, a, b) => Some(consts.get(a)?.wrapping_add(consts.get(b)?)),
@@ -112,7 +114,7 @@ impl IrOp {
         }
     }
 
-    pub fn binary_op(&self, a: ConsVal, b: ConsVal) -> Option<ConsVal> {
+    pub fn binary_op(&self, a: ConstVal, b: ConstVal) -> Option<ConstVal> {
         use IrOp::*;
         match self {
             Add(..) => Some(a.wrapping_add(b)),
@@ -141,7 +143,7 @@ impl IrOp {
         self.unary_op(0).is_some()
     }
 
-    pub fn unary_op(&self, v: ConsVal) -> Option<ConsVal> {
+    pub fn unary_op(&self, v: ConstVal) -> Option<ConstVal> {
         use IrOp::*;
         match self {
             Not(..) => Some(!v),
@@ -179,7 +181,21 @@ pub struct Initializer {
     //ast: ConstDef,
     name: Identifier,
     ty: Type,
-    value: Option<ConsVal>,
+    value: InitValue,
+}
+#[derive(Clone, Debug)]
+pub enum InitValue {
+    NotResolved,
+    Const(ConstVal),
+    AddressTo(Rc<[ConstVal]>, Range<usize>),
+}
+impl InitValue {
+    pub fn get_const(&self) -> Option<ConstVal> {
+        match self {
+            Self::Const(v) => Some(*v),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -192,18 +208,21 @@ pub struct Lowered {
 pub struct SymbolTable {
     pub consts: HashMap<String, usize>,
     pub functions: HashMap<String, usize>,
+    pub globals: HashMap<String, usize>,
 }
 
 pub struct RefAst {
     consts: Vec<ConstDef>,
     functions: Vec<FuncDef>,
+    globals: Vec<GlobalDef>,
 }
 
 impl SymbolTable {
-    fn scan_symbols<'a>(items: impl IntoIterator<Item = &'a Item>) -> Result<(Self, RefAst), Vec<LoweringError>> {
+    pub fn scan_symbols<'a>(items: impl IntoIterator<Item = &'a Item>) -> Result<(Self, RefAst), Vec<LoweringError>> {
         let mut names: HashMap<String, Identifier> = HashMap::new();
         let mut consts = Vec::new();
         let mut functions = Vec::new();
+        let mut globals = Vec::new();
         let mut errors = Vec::new();
         for item in items {
             let name = match item {
@@ -214,6 +233,10 @@ impl SymbolTable {
                 Item::Func(func) => {
                     functions.push(func.clone());
                     &func.name
+                }
+                Item::Global(glob) => {
+                    globals.push(glob.clone());
+                    &glob.name
                 }
             };
             if let Some(prev) = names.get(name.value.as_str()) {
@@ -228,8 +251,9 @@ impl SymbolTable {
         let table = Self {
             functions: functions.iter().enumerate().map(|(i, v)| (v.name.value.clone(), i)).collect(),
             consts: consts.iter().enumerate().map(|(i, v)| (v.name.value.clone(), i)).collect(),
+            globals: globals.iter().enumerate().map(|(i, v)| (v.name.value.clone(), i)).collect(),
         };
-        let ast = RefAst { consts, functions };
+        let ast = RefAst { consts, functions, globals };
         Ok((table, ast))
     }
 }
@@ -240,7 +264,7 @@ impl Lowered {
             consts: ast
                 .consts
                 .iter()
-                .map(|v| Initializer { name: v.name.clone(), ty: v.ty.clone(), value: None })
+                .map(|v| Initializer { name: v.name.clone(), ty: v.ty.clone(), value: InitValue::NotResolved })
                 .collect(),
             functions: Vec::new(),
             symbols: table,
@@ -265,7 +289,7 @@ impl Lowered {
                 match c.try_lower(a, &self.symbols, &values_table) {
                     Ok(()) => {
                         any_resolved = true;
-                        let val = c.value.expect("Logic error, value should be resolved");
+                        let val = c.value.get_const().expect("Logic error, value should be resolved");
                         values_table.insert(i, (val, c.ty.clone()));
                     }
                     Err(Some(e)) => {
@@ -284,7 +308,7 @@ impl Lowered {
         let unresolved = self
             .consts
             .iter()
-            .filter(|v| v.value.is_none())
+            .filter(|v| v.value.get_const().is_none())
             .map(|v| LoweringError::CannotResolveConst(v.name.span))
             .collect::<Vec<_>>();
         if !unresolved.is_empty() {
@@ -831,11 +855,11 @@ impl FuncCtx<'_> {
             self.opcodes.push(IrOp::Kill(val.value));
         }
     }
-    pub fn get_const(&self, name: &str) -> Option<(ConsVal, Type)> {
+    pub fn get_const(&self, name: &str) -> Option<(ConstVal, Type)> {
         self.consts
             .iter()
             .find(|c| c.name.value == name)
-            .map(|c| (c.value.expect("Consts should be initialized ath this stage"), c.ty.clone()))
+            .map(|c| (c.value.get_const().expect("Consts should be initialized ath this stage"), c.ty.clone()))
     }
     pub fn make(&mut self) -> Value {
         self.vals.make()
@@ -853,21 +877,21 @@ impl Initializer {
         &mut self,
         ast: &ConstDef,
         symbols: &SymbolTable,
-        values: &HashMap<usize, (ConsVal, Type)>,
+        values: &HashMap<usize, (ConstVal, Type)>,
     ) -> Result<(), Option<LoweringError>> {
         let (value, typ) = Self::visit_expr(&ast.init, symbols, values)?;
         if !typ.type_eq(&self.ty) {
             return Err(Some(LoweringError::TypesDontMatch(typ.span(), self.ty.span())));
         }
-        self.value = Some(value);
+        self.value = InitValue::Const(value);
         Ok(())
     }
 
     fn visit_expr(
         expr: &Expression,
         s: &SymbolTable,
-        v: &HashMap<usize, (ConsVal, Type)>,
-    ) -> Result<(ConsVal, Type), Option<LoweringError>> {
+        v: &HashMap<usize, (ConstVal, Type)>,
+    ) -> Result<(ConstVal, Type), Option<LoweringError>> {
         match expr {
             Expression::Paren(e) => Ok(Self::visit_expr(&*e, s, v)?),
             Expression::Not(e) => {
@@ -903,9 +927,9 @@ impl Initializer {
         a: &Expression,
         b: &Expression,
         s: &SymbolTable,
-        v: &HashMap<usize, (ConsVal, Type)>,
-        func: impl FnOnce(ConsVal, ConsVal) -> ConsVal,
-    ) -> Result<(ConsVal, Type), Option<LoweringError>> {
+        v: &HashMap<usize, (ConstVal, Type)>,
+        func: impl FnOnce(ConstVal, ConstVal) -> ConstVal,
+    ) -> Result<(ConstVal, Type), Option<LoweringError>> {
         let (a, at) = Self::visit_expr(a, s, v)?;
         let (b, bt) = Self::visit_expr(b, s, v)?;
         if !at.type_eq(&bt) {
@@ -978,7 +1002,7 @@ mod tests {
                         cond: Box::new(Ne(var("count"), var("cond"))),
                         block: vec![Statement::Assign(
                             var("count"),
-                            Box::new(Call(mock_name("op_func"), vec![*num(3), *num(1)])), //todo const arguments don't optimize jumps
+                            Box::new(Call(mock_name("op_func"), vec![*var("count"), *num(1)])), //todo const arguments don't optimize jumps
                         )],
                     },
                 ],
@@ -987,7 +1011,7 @@ mod tests {
 
         let (table, ast) = SymbolTable::scan_symbols(ast.iter()).unwrap();
         let mut lower = Lowered::lower_all(table, &ast).unwrap();
-        let before_opt = lower.functions[0].opcodes.clone();
+        let before_opt = lower.functions[1].opcodes.clone();
         for (i, op) in before_opt.iter().enumerate() {
             println!("{i}: {:?}", op);
         }
@@ -995,7 +1019,7 @@ mod tests {
         let start = Instant::now();
         optimize_ir(&mut lower, OptimizerOptions::SPEED);
         println!("****** After opt (took: {:.3?})", start.elapsed());
-        for (i, op) in lower.functions[0].opcodes.iter().enumerate() {
+        for (i, op) in lower.functions[1].opcodes.iter().enumerate() {
             println!("{i}: {:?}", op);
         }
     }
