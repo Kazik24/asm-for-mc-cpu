@@ -1,5 +1,6 @@
 use druid::piet::TextStorage;
 use std::fmt::{Debug, Display, Formatter, Write};
+use std::panic::Location;
 use std::sync::{Arc, Mutex};
 use TokenKind::*;
 
@@ -44,6 +45,11 @@ impl Span {
     #[cfg(test)]
     pub const fn mocked() -> Self {
         Self { start: 0, end: 0 }
+    }
+    #[cfg(test)]
+    #[track_caller]
+    pub fn mocked_caller() -> Self {
+        Self { start: Location::caller().line() as _, end: 0 }
     }
     pub fn lo(self) -> usize {
         self.start

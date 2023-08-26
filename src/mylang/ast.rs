@@ -1,6 +1,7 @@
 use crate::mylang::preproc::*;
 use crate::mylang::SourceLoader;
 use std::mem::discriminant;
+use std::ops::{Add, Sub};
 
 #[derive(Clone, Debug)]
 pub enum Item {
@@ -31,6 +32,9 @@ impl Type {
             I16(v) | U16(v) | I8(v) | U8(v) | Bool(v) => *v,
             Self::Ptr(v) => v.span(),
         }
+    }
+    pub fn is_word_sized(&self) -> bool {
+        self.size_of() == 2
     }
     pub fn size_of(&self) -> u32 {
         use Type::*;
@@ -120,6 +124,19 @@ impl Expression {
             Self::Call(v, _) => v.span,
             _ => todo!(),
         }
+    }
+}
+
+impl Add for Box<Expression> {
+    type Output = Box<Expression>;
+    fn add(self, rhs: Self) -> Self::Output {
+        Box::new(Expression::Add(self, rhs))
+    }
+}
+impl Sub for Box<Expression> {
+    type Output = Box<Expression>;
+    fn sub(self, rhs: Self) -> Self::Output {
+        Box::new(Expression::Add(self, rhs))
     }
 }
 

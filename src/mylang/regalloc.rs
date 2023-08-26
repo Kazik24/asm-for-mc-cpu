@@ -1,4 +1,4 @@
-use crate::mylang::ast::Type;
+use crate::mylang::ast::{Item, Type};
 use crate::mylang::ir::ConstVal;
 use std::fmt::{Debug, Formatter};
 
@@ -52,6 +52,9 @@ impl Debug for Value {
 }
 
 impl Value {
+    pub fn zero_const() -> Self {
+        Value { const_val: 0, is_const: true, kind: ValueKind::Tmp, use_kind: UseKind::None, index: u32::MAX }
+    }
     pub fn new_index(index: u32) -> Self {
         Self { index, kind: ValueKind::Tmp, const_val: 0, use_kind: UseKind::None, is_const: false }
     }
@@ -125,9 +128,78 @@ impl ValueAllocator {
 }
 
 pub struct RegAlloc {
-    allocated: Vec<Option<u32>>,
+    allocated: Vec<RegState>,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum RegState {
+    Empty,
+    Occupied(u32),
+    Temp,
+    Reserved,
+}
+
+#[derive(Copy, Clone, PartialEq)]
+pub struct Reg {
+    pub num: u16,
+}
+
+impl Debug for Reg {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "r{}", self.num)
+    }
 }
 
 impl RegAlloc {
-    pub fn fork() {}
+    pub fn new(exclude: impl IntoIterator<Item = u32>) -> Self {
+        let mut regs = exclude.into_iter().collect::<Vec<_>>();
+        regs.sort_unstable();
+        let allocated = if regs.is_empty() {
+            Vec::new()
+        } else {
+            let mut vec = vec![RegState::Empty; *regs.last().unwrap() as usize + 1];
+            for i in regs {
+                vec[i as usize] = RegState::Reserved;
+            }
+            vec
+        };
+        Self { allocated }
+    }
+
+    pub fn get_reg(&mut self, value: Value) -> Reg {
+        if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Empty) {
+            self.allocated[pos] = RegState::Occupied(value.index);
+            Reg { num: pos as _ }
+        } else {
+            let pos = self.allocated.len();
+            self.allocated.push(RegState::Occupied(value.index));
+            Reg { num: pos as _ }
+        }
+    }
+
+    pub fn get_temp_reg(&mut self) -> Reg {
+        if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Empty) {
+            self.allocated[pos] = RegState::Temp;
+            Reg { num: pos as _ }
+        } else {
+            let pos = self.allocated.len();
+            self.allocated.push(RegState::Temp);
+            Reg { num: pos as _ }
+        }
+    }
+
+    pub fn drop_value_reg(&mut self, value: Value) {
+        let pos = self
+            .allocated
+            .iter()
+            .position(|v| *v == RegState::Occupied(value.index))
+            .expect("Register for this value is not allocated");
+        self.allocated[pos] = RegState::Empty;
+    }
+
+    pub fn drop_reg(&mut self, reg: Reg) {
+        let slot = self.allocated.get_mut(reg.num as usize).expect("Error: cannot drop unallocated register");
+        assert!(matches!(*slot, RegState::Occupied(_) | RegState::Temp), "Error: cannot drop unallocated register");
+        *slot = RegState::Empty;
+    }
 }

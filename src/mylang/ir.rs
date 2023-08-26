@@ -532,12 +532,12 @@ impl LoweredFunction {
             }
             Expression::Pointer(expr) => {
                 let val = Self::visit_expr(value, ctx, None)?;
-                if !matches!(val.ty, Type::U16(_)) {
-                    return Err(LoweringError::ExpectedUintType(value.span()));
+                if !val.ty.is_word_sized() {
+                    return Err(LoweringError::ExpectedWordSizedType(val.ty.span()));
                 }
                 let p = Self::visit_expr(expr, ctx, None)?;
-                if !matches!(p.ty, Type::Ptr(_)) {
-                    return Err(LoweringError::ExpectedPointerType(expr.span()));
+                if !p.ty.type_eq(&Type::Ptr(Box::new(val.ty.clone()))) {
+                    return Err(LoweringError::TypesDontMatch(p.ty.span(), val.ty.span()));
                 }
                 ctx.opcodes.push(IrOp::PtrStore(p.value, val.value));
                 ctx.kill(p.value);
@@ -943,6 +943,7 @@ impl Initializer {
 #[cfg(test)]
 mod tests {
     use crate::mylang::ast::*;
+    use crate::mylang::codegen::{generate_code, CodegenOptions};
     use crate::mylang::ir::{Lowered, SymbolTable};
     use crate::mylang::optimizer::{optimize_ir, OptimizerOptions};
     use crate::mylang::preproc::Span;
@@ -953,8 +954,13 @@ mod tests {
     const S: Span = Span::mocked();
     const U16: Type = Type::U16(S);
 
+    #[track_caller]
+    fn ptr_ty() -> Type {
+        Type::Ptr(Box::new(Type::U16(Span::mocked_caller())))
+    }
+    #[track_caller]
     fn mock_name(s: &str) -> Identifier {
-        Identifier { value: s.to_string(), span: S }
+        Identifier { value: s.to_string(), span: Span::mocked_caller() }
     }
     fn mock_arg(s: &str, ty: Type) -> Argument {
         Argument { name: mock_name(s), ty }
@@ -993,11 +999,7 @@ mod tests {
                 inline: false,
                 stt: vec![
                     Statement::Var { name: mock_name("count"), ty: U16, expr: Box::new(Add(num(0), num(1))) },
-                    Statement::Var {
-                        name: mock_name("cond"),
-                        ty: U16,
-                        expr: Box::new(Sub(Box::new(Add(num(6), num(4))), num(10))),
-                    },
+                    Statement::Var { name: mock_name("cond"), ty: U16, expr: (num(6) + num(4)) - num(10) },
                     Statement::While {
                         cond: Box::new(Ne(var("count"), var("cond"))),
                         block: vec![Statement::Assign(
@@ -1007,11 +1009,38 @@ mod tests {
                     },
                 ],
             }),
+            Item::Func(FuncDef {
+                name: mock_name("memcpy"),
+                ret: None,
+                args: vec![mock_arg("src", ptr_ty()), mock_arg("src_end", ptr_ty()), mock_arg("dst", ptr_ty())],
+                inline: false,
+                stt: vec![Statement::While {
+                    cond: Box::new(Expression::Ne(var("src"), var("src_end"))),
+                    block: vec![
+                        Statement::Var {
+                            name: mock_name("temp"),
+                            ty: Type::U16(Span::mocked_caller()),
+                            expr: Box::new(Expression::Pointer(var("src"))),
+                        },
+                        Statement::Assign(Box::new(Expression::Pointer(var("dst"))), var("temp")),
+                        Statement::Assign(var("src"), Box::new(Call(mock_name("ptr_add"), vec![*var("src"), *num(1)]))),
+                        Statement::Assign(var("dst"), Box::new(Call(mock_name("ptr_add"), vec![*var("dst"), *num(1)]))),
+                    ],
+                }],
+            }),
+            Item::Func(FuncDef {
+                name: mock_name("ptr_add"),
+                ret: Some(ptr_ty()),
+                args: vec![mock_arg("ptr", ptr_ty()), mock_arg("count", U16)],
+                inline: false,
+                stt: vec![Statement::Return(S, Some(var("ptr") + Box::new(Expression::Cast(ptr_ty(), num(1)))))],
+            }),
         ];
 
         let (table, ast) = SymbolTable::scan_symbols(ast.iter()).unwrap();
         let mut lower = Lowered::lower_all(table, &ast).unwrap();
-        let before_opt = lower.functions[1].opcodes.clone();
+        let index = 2;
+        let before_opt = lower.functions[index].opcodes.clone();
         for (i, op) in before_opt.iter().enumerate() {
             println!("{i}: {:?}", op);
         }
@@ -1019,8 +1048,14 @@ mod tests {
         let start = Instant::now();
         optimize_ir(&mut lower, OptimizerOptions::SPEED);
         println!("****** After opt (took: {:.3?})", start.elapsed());
-        for (i, op) in lower.functions[1].opcodes.iter().enumerate() {
+        for (i, op) in lower.functions[index].opcodes.iter().enumerate() {
             println!("{i}: {:?}", op);
         }
+
+        println!("**** Generated code:");
+        let code = generate_code(
+            &lower,
+            CodegenOptions { stack_reg: 14, link_reg: 13, pc_reg: 15, temp_reg: 12, zero_reg: 0 },
+        );
     }
 }

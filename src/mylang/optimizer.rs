@@ -330,6 +330,7 @@ impl ValueInfo {
     pub fn reduce_dead_values(func: &mut LoweredFunction) {
         let mut to_remove = BTreeSet::new();
         loop {
+            let mut changed = false;
             let values = ValueInfo::scan(func);
             // println!("dead scan");
             // for (k, v) in values.iter().collect::<BTreeMap<_, _>>() {
@@ -348,11 +349,27 @@ impl ValueInfo {
                     to_remove.extend(info.writes.iter().copied());
                 }
             }
+
+            //remove unnecesary copies
+            for i in 0..func.opcodes.len() {
+                if let IrOp::Copy(dst, src) = func.opcodes[i] {
+                    let dst_info = values.get(&dst.index).unwrap();
+                    if dst_info.writes.len() == 1 {
+                        to_remove.insert(i);
+                        for (idx, src_idx, _) in &dst_info.reads {
+                            let value = &mut func.opcodes[*idx].vals_mut().1[*src_idx];
+                            **value = src;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
             for i in to_remove.iter().rev().copied() {
                 func.opcodes.remove(i);
             }
 
-            if to_remove.is_empty() {
+            if !changed && to_remove.is_empty() {
                 break;
             }
         }
@@ -577,4 +594,24 @@ fn inline_all(func: &mut LoweredFunction, list: &[LoweredFunction], inlines: &Ha
     //
 
     false
+}
+
+//todo value tree to compare if given values can be optimized out because they are the same
+enum ValueTree {
+    Const(ConstVal),
+    Add(Box<Self>, Box<Self>),
+    Sub(Box<Self>, Box<Self>),
+    BranchOf { cond: Box<Self>, on_true: Box<Self>, on_false: Box<Self> },
+}
+
+impl ValueTree {
+    // check if both values would be the same
+    pub fn is_equivalent(&self, other: &Self) -> bool {
+        todo!()
+    }
+
+    //calculate const exprs and refactor math operation order to still be equivalent but more optimized.
+    pub fn optimize_reduce(&self) {
+        todo!()
+    }
 }

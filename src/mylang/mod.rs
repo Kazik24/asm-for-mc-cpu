@@ -29,7 +29,10 @@ pub fn compile(main_file: &str, loader: Box<dyn SourceLoader>) -> Result<Vec<Opc
 
     //generate machine instructions, and perform hardware specific
     //optimizations (e.g select smaller instructions for short jumps)
-    let code = generate_code(&lowered_ir, CodegenOptions { stack_reg: 14, link_reg: 13 });
+    let code = generate_code(
+        &lowered_ir,
+        CodegenOptions { stack_reg: 14, link_reg: 13, pc_reg: 15, temp_reg: 12, zero_reg: 0 },
+    );
     Ok(code)
 }
 
@@ -64,6 +67,7 @@ pub enum LoweringError {
     ExpectedPointerType(Span),
     ExpectingOtherType(Span),
     ExpectedUintType(Span),
+    ExpectedWordSizedType(Span),
     FunctionMustReturnValue(Span),
     FunctionNotFound(Span),
     VoidReturnType(Span),
