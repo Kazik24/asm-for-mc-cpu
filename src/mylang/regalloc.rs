@@ -76,6 +76,9 @@ impl Value {
     pub fn is_locked_const(&self) -> bool {
         self.is_const && self.index == u32::MAX
     }
+    pub fn is_drop(&self) -> bool {
+        self.use_kind == UseKind::Drop
+    }
     pub fn set_lock_if_const(&mut self) {
         if self.get_const().is_some() {
             self.index = u32::MAX;
@@ -167,6 +170,9 @@ impl RegAlloc {
     }
 
     pub fn get_reg(&mut self, value: Value) -> Reg {
+        if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Occupied(value.index)) {
+            return Reg { num: pos as _ };
+        }
         if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Empty) {
             self.allocated[pos] = RegState::Occupied(value.index);
             Reg { num: pos as _ }
@@ -189,11 +195,9 @@ impl RegAlloc {
     }
 
     pub fn drop_value_reg(&mut self, value: Value) {
-        let pos = self
-            .allocated
-            .iter()
-            .position(|v| *v == RegState::Occupied(value.index))
-            .expect("Register for this value is not allocated");
+        let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Occupied(value.index)) else {
+            panic!("Register value is not allocated {value:?}");
+        };
         self.allocated[pos] = RegState::Empty;
     }
 

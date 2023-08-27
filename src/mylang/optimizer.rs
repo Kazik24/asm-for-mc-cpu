@@ -1,5 +1,5 @@
 use crate::mylang::ir::{ConstVal, IrOp, Label, Lowered, LoweredFunction};
-use crate::mylang::regalloc::Value;
+use crate::mylang::regalloc::{UseKind, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -373,6 +373,23 @@ impl ValueInfo {
                 break;
             }
         }
+    }
+
+    fn annotate_lifetimes(func: &mut LoweredFunction) {
+        let value_map = Self::scan(func);
+        let labels = LabelInfo::scan(&func.opcodes);
+        let init: Rc<HashMap<u32, ()>> = Default::default();
+        walk_opcodes(&mut func.opcodes, &labels, init, |idx, op, state, prev_instr| {
+            //todo add places where values are dropped
+            for val in op.vals_mut().1 {
+                if val.get_const().is_some() {
+                    val.use_kind = UseKind::Drop;
+                    continue;
+                }
+            }
+
+            false
+        })
     }
 }
 

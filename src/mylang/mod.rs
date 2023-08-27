@@ -2,6 +2,7 @@ mod ast;
 mod codegen;
 mod compiler;
 mod ir;
+mod linker;
 mod optimizer;
 mod preproc;
 mod regalloc;
