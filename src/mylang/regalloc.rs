@@ -129,16 +129,20 @@ impl ValueAllocator {
     }
     pub fn kill_scoped(&mut self, value: Value) {}
 }
-
+#[derive(Debug)]
 pub struct RegAlloc {
     allocated: Vec<RegState>,
+    max_hardware_regs: u32,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum RegState {
     Empty,
     Occupied(u32),
-    Temp,
+    /// * `None` - regular (previously empty) reg treated as temp which should be restored to Empty
+    /// * `Some(true)` - Allocated temp register, restored to Some(false)
+    /// * `Some(false)` - Unallocated temp register, set to Some(true) to allocate
+    Temp(Option<bool>),
     Reserved,
 }
 
@@ -154,19 +158,19 @@ impl Debug for Reg {
 }
 
 impl RegAlloc {
-    pub fn new(exclude: impl IntoIterator<Item = u32>) -> Self {
-        let mut regs = exclude.into_iter().collect::<Vec<_>>();
-        regs.sort_unstable();
-        let allocated = if regs.is_empty() {
-            Vec::new()
-        } else {
-            let mut vec = vec![RegState::Empty; *regs.last().unwrap() as usize + 1];
-            for i in regs {
-                vec[i as usize] = RegState::Reserved;
-            }
-            vec
-        };
-        Self { allocated }
+    pub fn new(exclude: impl IntoIterator<Item = u32>, temps: impl IntoIterator<Item = u32>, max_hw_regs: u32) -> Self {
+        let mut regs = vec![RegState::Empty; max_hw_regs as _];
+        for e in exclude {
+            let reg = regs.get_mut(e as usize).expect("Reserved register out of range for this hardware");
+            *reg = RegState::Reserved;
+        }
+        for t in temps {
+            let reg = regs.get_mut(t as usize).expect("Temp register out of range for this hardware");
+            assert_eq!(*reg, RegState::Empty);
+            *reg = RegState::Temp(Some(false));
+        }
+
+        Self { allocated: regs, max_hardware_regs: max_hw_regs }
     }
 
     pub fn get_reg(&mut self, value: Value) -> Reg {
@@ -184,12 +188,15 @@ impl RegAlloc {
     }
 
     pub fn get_temp_reg(&mut self) -> Reg {
-        if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Empty) {
-            self.allocated[pos] = RegState::Temp;
+        if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Temp(Some(false))) {
+            self.allocated[pos] = RegState::Temp(Some(true));
+            Reg { num: pos as _ }
+        } else if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Empty) {
+            self.allocated[pos] = RegState::Temp(None);
             Reg { num: pos as _ }
         } else {
             let pos = self.allocated.len();
-            self.allocated.push(RegState::Temp);
+            self.allocated.push(RegState::Temp(None));
             Reg { num: pos as _ }
         }
     }
@@ -198,12 +205,17 @@ impl RegAlloc {
         let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Occupied(value.index)) else {
             panic!("Register value is not allocated {value:?}");
         };
-        self.allocated[pos] = RegState::Empty;
+        self.drop_reg(Reg { num: pos as _ });
     }
 
     pub fn drop_reg(&mut self, reg: Reg) {
         let slot = self.allocated.get_mut(reg.num as usize).expect("Error: cannot drop unallocated register");
-        assert!(matches!(*slot, RegState::Occupied(_) | RegState::Temp), "Error: cannot drop unallocated register");
-        *slot = RegState::Empty;
+
+        if *slot == RegState::Temp(Some(true)) {
+            *slot = RegState::Temp(Some(false));
+        } else {
+            assert!(matches!(*slot, RegState::Occupied(_) | RegState::Temp(None)), "Cannot drop unallocated register");
+            *slot = RegState::Empty;
+        }
     }
 }

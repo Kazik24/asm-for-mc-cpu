@@ -18,5 +18,5 @@ fn tokenize(main: &str, loader: Arc<dyn SourceLoader>) -> Result<(Vec<Token>, So
 
 fn process_tree(main: &str, loader: Arc<dyn SourceLoader>) -> Arc<str> {
     //todo for now only supports single file
-    loader.load_source(main).into()
+    loader.load_source(main).unwrap_or_default().into()
 }

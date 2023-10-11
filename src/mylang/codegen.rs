@@ -11,14 +11,19 @@ pub struct CodegenOptions {
     pub pc_reg: u32,
     pub temp_reg: u32, //for storing temporary values for opcodes, e.g some constant, or address for ram access
     pub zero_reg: u32,
+    pub argument_regs: u32,
+    pub register_count: u32,
 }
 
 pub fn generate_code_as_assembly(ir: &Lowered, options: CodegenOptions) -> String {
     let mut opcodes = CodeWriter::default();
 
+    let reserved_regs = [options.zero_reg, options.stack_reg, options.link_reg, options.pc_reg];
+
     for (index, func) in ir.functions.iter().enumerate() {
         let mut opcodes = Vec::new();
-        let mut ctx = CodegenCtx { regs: RegAlloc::new([0, 13, 14, 15]), opcodes: &mut opcodes, config: options };
+        let regs = RegAlloc::new(reserved_regs, [options.temp_reg], options.register_count);
+        let mut ctx = CodegenCtx { regs, opcodes: &mut opcodes, config: options };
         generate_function(func, &mut ctx);
         insert_spilled_registers(ctx.opcodes);
         println!("Generated code for function {}", func.name.value);
@@ -93,8 +98,17 @@ pub enum PrelinkOpcode {
 }
 
 fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
+    //todo better args reg allocation
+    if let Some(ret) = &func.return_value {
+        ctx.regs.get_reg(ret.value);
+    }
+    for arg in &func.args {
+        ctx.regs.get_reg(*arg);
+    }
+
     for op in &func.opcodes {
         use IrOp::*;
+        use RegOrConst::*;
         match *op {
             Const(dst, val) => {
                 let reg = ctx.regs.get_reg(dst);
@@ -102,7 +116,8 @@ fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
             }
             Add(dst, a, b) => ctx.add_op(dst, a, b),
             Sub(dst, a, b) => ctx.sub_op(dst, a, b),
-            Mul(_, _, _) => {}
+            UMul(dst, a, b) => ctx.mul_op(dst, a, b, false),
+            IMul(dst, a, b) => ctx.mul_op(dst, a, b, true),
             Shl(dst, a, b) => ctx.shift_op(dst, a, b, SubCommand::SetLHZ, SubCommand::Shl),
             Shr(dst, a, b) => ctx.shift_op(dst, a, b, SubCommand::SetHLZ, SubCommand::Shr),
             Ashr(dst, a, b) => ctx.shift_op(dst, a, b, SubCommand::SetHLS, SubCommand::Ashr),
@@ -117,13 +132,13 @@ fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
             CmpNe(dst, a, b) => ctx.simple_op(dst, a, b, Command::CmpNe),
             JumpFalse(val, lab) => {
                 assert!(val.get_const().is_none());
-                let reg = ctx.regs.get_reg(val);
+                let reg = ctx.get_maybe_dropped(val);
                 ctx.opcodes.push(PrelinkOpcode::JmpZ(reg, Offset::Label(lab)))
             }
             JumpTrue(val, lab) => {
                 assert!(val.get_const().is_none());
+                let reg = ctx.get_maybe_dropped(val);
                 let temp = ctx.regs.get_temp_reg();
-                let reg = ctx.regs.get_reg(val);
                 ctx.regs.drop_reg(temp);
                 ctx.opcodes.push(PrelinkOpcode::Ex(SubCommand::Not, temp, reg));
                 ctx.opcodes.push(PrelinkOpcode::JmpZ(reg, Offset::Label(lab)))
@@ -132,27 +147,23 @@ fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
             Return => {}
             Label(l) => ctx.opcodes.push(PrelinkOpcode::Label(l)),
             Kill(val) => ctx.regs.drop_value_reg(val),
-            CallVoid(_, _) => {}
+            CallVoid(idx, ref args) => ctx.call_void(idx, &args),
             CallValue(_, _, _) => {}
             Not(dst, src) => ctx.unary_op(dst, src, |d, s, _z| PrelinkOpcode::Ex(SubCommand::Not, d, s)),
-            Neg(dst, src) => {
-                ctx.unary_op(dst, src, |d, s, z| PrelinkOpcode::Op(Command::Sub, d, z, RegOrConst::Reg(s)))
-            }
+            Neg(dst, src) => ctx.unary_op(dst, src, |d, s, z| PrelinkOpcode::Op(Command::Sub, d, z, Reg(s))),
             WordToByte(dst, src) => ctx.unary_op(dst, src, |d, s, z| PrelinkOpcode::Ex(SubCommand::SetLLZ, d, z)),
             HiToByte(dst, src) => ctx.unary_op(dst, src, |d, s, z| PrelinkOpcode::Ex(SubCommand::SetHLZ, d, z)),
             ByteToWord(dst, src) => ctx.unary_op(dst, src, |d, s, z| PrelinkOpcode::Ex(SubCommand::SetLLZ, d, z)),
             ByteExtend(dst, src) => ctx.unary_op(dst, src, |d, s, z| PrelinkOpcode::Ex(SubCommand::SetLLS, d, z)),
-            Copy(dst, src) => {
-                ctx.unary_op(dst, src, |d, s, z| PrelinkOpcode::Op(Command::Or, d, s, RegOrConst::Reg(z)))
-            }
+            Copy(dst, src) => ctx.unary_op(dst, src, |d, s, z| PrelinkOpcode::Op(Command::Or, d, s, Reg(z))),
             PtrLoad(dst, addr) => {
                 assert!(dst.get_const().is_none());
                 let dst = ctx.regs.get_reg(dst);
                 let reg = match addr.get_const() {
                     Some(ac) => ctx.temp_const_reg(ac),
-                    None => ctx.regs.get_reg(addr),
+                    None => ctx.get_maybe_dropped(addr),
                 };
-                ctx.opcodes.push(PrelinkOpcode::Op(Command::Movw, dst, reg, RegOrConst::Reg(ctx.zero_reg())));
+                ctx.opcodes.push(PrelinkOpcode::Op(Command::Movw, dst, reg, Reg(ctx.zero_reg())));
             }
             PtrStore(dst, value) => {
                 let mut temp1 = None;
@@ -163,17 +174,17 @@ fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
                         temp1 = Some(t);
                         t
                     }
-                    None => ctx.regs.get_reg(dst),
+                    None => ctx.get_maybe_dropped(dst),
                 };
                 let src_val = match value.get_const() {
                     Some(c) => ctx.temp_const_reg(c),
-                    None => ctx.regs.get_reg(value),
+                    None => ctx.get_maybe_dropped(value),
                 };
                 if let Some(t) = temp1 {
                     ctx.regs.drop_reg(t);
                 }
                 //both registers have now desired values, and are marked as unallocated, so after this op they can be assigned to other ops
-                ctx.opcodes.push(PrelinkOpcode::Op(Command::Movw, ctx.zero_reg(), dst_addr, RegOrConst::Reg(src_val)));
+                ctx.opcodes.push(PrelinkOpcode::Op(Command::Movw, ctx.zero_reg(), dst_addr, Reg(src_val)));
             }
         }
     }
@@ -216,8 +227,20 @@ impl CodegenCtx<'_> {
                 }
                 (ar, RegOrConst::Reg(br))
             }
-            (Some(ac), None) => (self.temp_const_reg(ac), RegOrConst::Reg(self.regs.get_reg(b))),
-            (None, Some(bc)) => (self.regs.get_reg(a), RegOrConst::Reg(self.temp_const_reg(bc))),
+            (Some(ac), None) => {
+                let reg = self.regs.get_reg(b);
+                if b.is_drop() {
+                    self.regs.drop_value_reg(b);
+                }
+                (self.temp_const_reg(ac), RegOrConst::Reg(reg))
+            }
+            (None, Some(bc)) => {
+                let reg = self.regs.get_reg(a);
+                if b.is_drop() {
+                    self.regs.drop_value_reg(a);
+                }
+                (reg, RegOrConst::Reg(self.temp_const_reg(bc)))
+            }
             _ => unreachable!("Unoptimized add instruction with two constants {dst:?} {a:?} {b:?}"),
         };
         let dst = self.regs.get_reg(dst);
@@ -230,12 +253,18 @@ impl CodegenCtx<'_> {
 
     fn unary_op(&mut self, dst: Value, src: Value, func: impl FnOnce(Reg, Reg, Reg) -> PrelinkOpcode) {
         assert!(src.get_const().is_none());
+        let reg = self.regs.get_reg(src);
+        if src.is_drop() {
+            self.regs.drop_value_reg(src);
+        }
         let dst = self.regs.get_reg(dst);
-        let src = self.regs.get_reg(src);
-        self.opcodes.push(func(dst, src, self.zero_reg()));
+        self.opcodes.push(func(dst, reg, self.zero_reg()));
     }
 
     fn temp_const_reg(&mut self, value: u16) -> Reg {
+        if value == 0 {
+            return self.zero_reg();
+        }
         let temp = self.regs.get_temp_reg();
         self.load_const(temp, value);
         self.regs.drop_reg(temp);
@@ -244,7 +273,9 @@ impl CodegenCtx<'_> {
 
     fn load_const(&mut self, dst: Reg, value: u16) {
         let signed_val = value as i16;
-        if signed_val >= -8 && signed_val <= 7 {
+        if value == 0 {
+            self.opcodes.push(PrelinkOpcode::Op(Command::Or, dst, self.zero_reg(), RegOrConst::Reg(self.zero_reg())));
+        } else if signed_val >= -8 && signed_val <= 7 {
             self.opcodes.push(PrelinkOpcode::Op(Command::Ads, dst, self.zero_reg(), RegOrConst::Small(value & 0xf)))
         } else {
             self.opcodes.push(PrelinkOpcode::Ex(SubCommand::Cldi, dst, self.zero_reg()));
@@ -260,9 +291,9 @@ impl CodegenCtx<'_> {
             (Some(ac), None) => {
                 let signed_ac = ac as i16;
                 if signed_ac >= -8 && signed_ac <= 7 {
-                    (Command::Ads, self.regs.get_reg(b), RegOrConst::Small(ac & 0xf))
+                    (Command::Ads, self.get_maybe_dropped(b), RegOrConst::Small(ac & 0xf))
                 } else {
-                    (Command::Add, self.regs.get_reg(b), RegOrConst::Reg(self.temp_const_reg(ac)))
+                    (Command::Add, self.get_maybe_dropped(b), RegOrConst::Reg(self.temp_const_reg(ac)))
                 }
             }
             (None, Some(bc)) => {
@@ -337,8 +368,46 @@ impl CodegenCtx<'_> {
         self.opcodes.push(PrelinkOpcode::Ex(by8, dst, dst));
     }
 
-    fn mul_const(&mut self, dst: Reg, src: Reg, by: u16) {
+    fn mul_op(&mut self, dst: Value, a: Value, b: Value, signed: bool) {
+        if signed {
+            todo!("Signed multiply is not implemented");
+        }
+        match (a.get_const(), b.get_const()) {
+            (_, None) => {
+                todo!("Multiply by varialbe is not supported yet")
+            }
+            (None, Some(bc)) => {
+                let src = self.get_maybe_dropped(a);
+                let dst = self.regs.get_reg(dst);
+                if !bc.is_power_of_two() || signed {
+                    if signed {
+                        todo!("Only unsigned powers of 2 are supported for now");
+                    } else {
+                        self.mul_const_unsigned(dst, src, bc);
+                    }
+                }
+                self.shift_cmd_const(dst, src, bc, SubCommand::SetLHZ, SubCommand::Shl);
+            }
+            _ => unreachable!("Unoptimized multiply instruction with two constants {dst:?} {a:?} {b:?}"),
+        };
+    }
+
+    fn mul_const_unsigned(&mut self, dst: Reg, src: Reg, by: u16) {
         let temp = self.regs.get_temp_reg();
+        self.regs.drop_reg(temp);
+        let mut part_reg = src;
+
+        for mask in (0..u16::BITS).map(|v| (1 << v) as u16) {
+            if by & mask != 0 {}
+        }
+    }
+
+    fn get_maybe_dropped(&mut self, value: Value) -> Reg {
+        let reg = self.regs.get_reg(value);
+        if value.is_drop() {
+            self.regs.drop_value_reg(value);
+        }
+        reg
     }
 
     fn copy_to_temp_reg(&mut self, value: Value) -> Reg {
@@ -356,32 +425,53 @@ impl CodegenCtx<'_> {
     }
 
     fn result_reg_with_copy(&mut self, dst: Value, value: Value) -> Reg {
-        let reg = self.regs.get_reg(dst);
         if let Some(vc) = value.get_const() {
+            let reg = self.regs.get_reg(dst);
             self.load_const(reg, vc);
+            reg
         } else {
-            let r = self.regs.get_reg(value);
-            if value.is_drop() {
-                self.regs.drop_value_reg(value);
-            }
+            let reg = self.regs.get_reg(dst);
+            //todo should this be more optimized to avoid allocations when dst reg == value reg?
+            let r = self.get_maybe_dropped(value);
             self.opcodes.push(PrelinkOpcode::Op(Command::Or, reg, r, RegOrConst::Reg(self.zero_reg())));
+            reg
         }
-        reg
+    }
+
+    /// Copies `value` into `dst` register and allocates temporary register for `operand`, this function tries
+    /// to reuse registers which are marked for drop
+    fn copy_result_and_temp_operand(&mut self, dst: Value, value: Value, operand: Value) -> (Reg, Reg) {
+        assert!(operand.get_const().is_none()); //operand cannot be const
+        if let Some(vc) = value.get_const() {
+            let reg = self.regs.get_reg(dst);
+            self.load_const(reg, vc);
+            let ope = self.copy_to_temp_reg(operand);
+            (reg, ope)
+        } else {
+            let r = self.get_maybe_dropped(value);
+            let reg = self.regs.get_reg(dst);
+            self.opcodes.push(PrelinkOpcode::Op(Command::Or, reg, r, RegOrConst::Reg(self.zero_reg())));
+            let ope = self.copy_to_temp_reg(operand);
+            (reg, ope)
+        }
     }
 
     fn shift_op(&mut self, dst: Value, a: Value, b: Value, by8: SubCommand, by1: SubCommand) {
         match (a.get_const(), b.get_const()) {
             (_, None) => {
-                let dst = self.result_reg_with_copy(dst, a);
-                let shift = self.copy_to_temp_reg(b);
+                let (dst, shift) = self.copy_result_and_temp_operand(dst, a, b);
                 self.shift_cmd_var(dst, shift, by8, by1);
             }
             (None, Some(bc)) => {
+                let src = self.get_maybe_dropped(a);
                 let dst = self.regs.get_reg(dst);
-                let src = self.regs.get_reg(a);
                 self.shift_cmd_const(dst, src, bc, by8, by1);
             }
             _ => unreachable!("Unoptimized shr instruction with two constants {dst:?} {a:?} {b:?}"),
         };
+    }
+
+    fn call_void(&mut self, index: usize, args: &[Value]) {
+        todo!()
     }
 }

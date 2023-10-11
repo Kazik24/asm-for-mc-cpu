@@ -73,7 +73,33 @@ impl Span {
         self.lo() <= span.hi() && self.hi() >= span.lo()
     }
     pub fn merge(&self, other: Self) -> Self {
-        todo!()
+        Self { start: self.start.min(other.start), end: self.end.max(other.end) }
+    }
+}
+
+pub struct TextInfo {
+    start_ptr: usize,
+    len: usize,
+}
+
+impl TextInfo {
+    pub fn new(text: &str) -> Self {
+        Self { start_ptr: text.as_ptr() as usize, len: text.len() }
+    }
+
+    pub fn try_spanned(&self, substring: &str) -> Option<Span> {
+        let start = self.start_ptr;
+        let sub = substring.as_ptr() as usize;
+        if sub >= self.start_ptr && self.start_ptr + self.len >= sub + substring.len() {
+            let start = sub - self.start_ptr;
+            Some(Span { start, end: start + substring.len() })
+        } else {
+            None
+        }
+    }
+
+    pub fn spanned(&self, substring: &str) -> Span {
+        self.try_spanned(substring).expect("Substring is not a part of original text")
     }
 }
 

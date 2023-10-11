@@ -30,19 +30,26 @@ pub fn compile(main_file: &str, loader: Box<dyn SourceLoader>) -> Result<Vec<Opc
 
     //generate machine instructions, and perform hardware specific
     //optimizations (e.g select smaller instructions for short jumps)
-    let code = generate_code(
-        &lowered_ir,
-        CodegenOptions { stack_reg: 14, link_reg: 13, pc_reg: 15, temp_reg: 12, zero_reg: 0 },
-    );
+    let code = generate_code(&lowered_ir, BEDROCK_CORE_CODEGEN);
     Ok(code)
 }
+
+pub const BEDROCK_CORE_CODEGEN: CodegenOptions = CodegenOptions {
+    pc_reg: 15,
+    stack_reg: 14,
+    link_reg: 13,
+    temp_reg: 12,
+    zero_reg: 0,
+    argument_regs: 4,
+    register_count: 16,
+};
 
 pub struct CompileErrors {
     errors: Vec<String>,
 }
 
 pub trait SourceLoader: Send + Sync {
-    fn load_source(&self, path: &str) -> String;
+    fn load_source(&self, path: &str) -> Option<String>;
 }
 
 pub struct MapSourceLoader {
@@ -50,8 +57,8 @@ pub struct MapSourceLoader {
 }
 
 impl SourceLoader for MapSourceLoader {
-    fn load_source(&self, path: &str) -> String {
-        self.src.get(path).cloned().unwrap_or_default()
+    fn load_source(&self, path: &str) -> Option<String> {
+        self.src.get(path).cloned()
     }
 }
 
@@ -68,6 +75,7 @@ pub enum LoweringError {
     ExpectedPointerType(Span),
     ExpectingOtherType(Span),
     ExpectedUintType(Span),
+    ExpectedNumberType(Span),
     ExpectedWordSizedType(Span),
     FunctionMustReturnValue(Span),
     FunctionNotFound(Span),

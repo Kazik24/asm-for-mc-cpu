@@ -15,7 +15,8 @@ pub enum IrOp {
     Const(Value, ConstVal),    //dst, src
     Add(Value, Value, Value),  //dst, left, right
     Sub(Value, Value, Value),  //dst, left, right
-    Mul(Value, Value, Value),  //dst, left, right
+    UMul(Value, Value, Value), //dst, left, right
+    IMul(Value, Value, Value), //dst, left, right
     Shl(Value, Value, Value),  //dst, left, right
     Shr(Value, Value, Value),  //dst, left, right
     Ashr(Value, Value, Value), //dst, left, right
@@ -55,8 +56,8 @@ impl IrOp {
         use IrOp::*;
         match self {
             Const(p, _) => (Some(p), vec![]),
-            Add(p, a, b) | Sub(p, a, b) | Mul(p, a, b) | Shr(p, a, b) | Shl(p, a, b) => (Some(p), vec![a, b]),
-            Ashr(p, a, b) | And(p, a, b) | Or(p, a, b) | Xor(p, a, b) => (Some(p), vec![a, b]),
+            Add(p, a, b) | Sub(p, a, b) | UMul(p, a, b) | IMul(p, a, b) | Shr(p, a, b) => (Some(p), vec![a, b]),
+            Shl(p, a, b) | Ashr(p, a, b) | And(p, a, b) | Or(p, a, b) | Xor(p, a, b) => (Some(p), vec![a, b]),
             CmpLt(p, a, b) | CmpGe(p, a, b) | CmpLts(p, a, b) | CmpGes(p, a, b) => (Some(p), vec![a, b]),
             CmpEq(p, a, b) | CmpNe(p, a, b) => (Some(p), vec![a, b]),
             JumpFalse(v, _) | JumpTrue(v, _) => (None, vec![v]),
@@ -75,7 +76,8 @@ impl IrOp {
         match *self {
             Add(_, a, b) => Some(consts.get(a)?.wrapping_add(consts.get(b)?)),
             Sub(_, a, b) => Some(consts.get(a)?.wrapping_sub(consts.get(b)?)),
-            Mul(_, a, b) => Some(consts.get(a)?.wrapping_mul(consts.get(b)?)),
+            UMul(_, a, b) => Some(consts.get(a)?.wrapping_mul(consts.get(b)?)),
+            IMul(_, a, b) => Some((consts.get(a)? as i16).wrapping_mul((consts.get(b)? as i16)) as _),
             Shl(_, a, b) => Some(consts.get(a)?.wrapping_shl(consts.get(b)? as _)),
             Shr(_, a, b) => Some(consts.get(a)?.wrapping_shr(consts.get(b)? as _)),
             Ashr(_, a, b) => Some((consts.get(a)? as i16).wrapping_shr(consts.get(b)? as _) as u16),
@@ -119,7 +121,8 @@ impl IrOp {
         match self {
             Add(..) => Some(a.wrapping_add(b)),
             Sub(..) => Some(a.wrapping_sub(b)),
-            Mul(..) => Some(a.wrapping_mul(b)),
+            UMul(..) => Some(a.wrapping_mul(b)),
+            IMul(..) => Some((a as i16).wrapping_mul(b as i16) as _),
             Shl(..) => Some(a.wrapping_shl(b as _)),
             Shr(..) => Some(a.wrapping_shr(b as _)),
             Ashr(..) => Some((a as i16).wrapping_shr(b as _) as u16),
@@ -536,7 +539,7 @@ impl LoweredFunction {
                     return Err(LoweringError::ExpectedWordSizedType(val.ty.span()));
                 }
                 let p = Self::visit_expr(expr, ctx, None)?;
-                if !p.ty.type_eq(&Type::Ptr(Box::new(val.ty.clone()))) {
+                if !p.ty.type_eq_ptr(&val.ty) {
                     return Err(LoweringError::TypesDontMatch(p.ty.span(), val.ty.span()));
                 }
                 ctx.opcodes.push(IrOp::PtrStore(p.value, val.value));
@@ -546,7 +549,7 @@ impl LoweredFunction {
             Expression::Index(array, index) => {
                 let val = Self::visit_expr(value, ctx, None)?;
                 let arr = Self::visit_expr(array, ctx, None)?;
-                let Type::Ptr(pt) = arr.ty else {
+                let Type::Ptr(_, pt) = arr.ty else {
                     return Err(LoweringError::ExpectedPointerType(array.span()));
                 };
                 if !val.ty.type_eq(&pt) {
@@ -585,6 +588,7 @@ impl LoweredFunction {
         ctx: &mut FuncCtx,
         place: Option<TypedValue>,
     ) -> Result<TypedValue, LoweringError> {
+        use IrOp::*;
         match expr {
             Expression::Number(v, sign, n) => {
                 let val = u16::try_from(*v)
@@ -616,7 +620,16 @@ impl LoweredFunction {
             Expression::Paren(expr) => Self::visit_expr(expr, ctx, place),
             Expression::Add(a, b) => Self::binary_op(a, b, ctx, place, IrOp::Add),
             Expression::Sub(a, b) => Self::binary_op(a, b, ctx, place, IrOp::Sub),
-            Expression::Mul(a, b) => Self::binary_op(a, b, ctx, place, IrOp::Mul),
+            Expression::Mul(a, b) => Self::typed_binary_op(a, b, ctx, place, |a, b, c, t| {
+                if !t.is_number() {
+                    return Err(LoweringError::ExpectedNumberType(t.span()));
+                }
+                if t.signed() {
+                    Ok(IrOp::IMul(a, b, c))
+                } else {
+                    Ok(IrOp::UMul(a, b, c))
+                }
+            }),
             Expression::Shr(a, b) => Self::binary_op(a, b, ctx, place, IrOp::Shr),
             Expression::AriShr(a, b) => Self::binary_op(a, b, ctx, place, IrOp::Ashr),
             Expression::Shl(a, b) => Self::binary_op(a, b, ctx, place, IrOp::Shl),
@@ -626,44 +639,20 @@ impl LoweredFunction {
             Expression::Eq(a, b) => Self::bin_eq(a, b, ctx, place, |_, d, a, b| IrOp::CmpEq(d, a, b)),
             Expression::Ne(a, b) => Self::bin_eq(a, b, ctx, place, |_, d, a, b| IrOp::CmpNe(d, a, b)),
             Expression::Ge(a, b) => {
-                Self::bin_eq(
-                    a,
-                    b,
-                    ctx,
-                    place,
-                    |s, d, a, b| if s { IrOp::CmpGes(d, a, b) } else { IrOp::CmpGe(d, a, b) },
-                )
+                Self::bin_eq(a, b, ctx, place, |s, d, a, b| if s { CmpGes(d, a, b) } else { CmpGe(d, a, b) })
             }
             Expression::Gr(a, b) => {
-                Self::bin_eq(
-                    a,
-                    b,
-                    ctx,
-                    place,
-                    |s, d, a, b| if s { IrOp::CmpLt(d, b, a) } else { IrOp::CmpLts(d, b, a) },
-                )
+                Self::bin_eq(a, b, ctx, place, |s, d, a, b| if s { CmpLt(d, b, a) } else { CmpLts(d, b, a) })
             }
             Expression::Lo(a, b) => {
-                Self::bin_eq(
-                    a,
-                    b,
-                    ctx,
-                    place,
-                    |s, d, a, b| if s { IrOp::CmpLt(d, a, b) } else { IrOp::CmpLts(d, a, b) },
-                )
+                Self::bin_eq(a, b, ctx, place, |s, d, a, b| if s { CmpLt(d, a, b) } else { CmpLts(d, a, b) })
             }
             Expression::Le(a, b) => {
-                Self::bin_eq(
-                    a,
-                    b,
-                    ctx,
-                    place,
-                    |s, d, a, b| if s { IrOp::CmpGes(d, b, a) } else { IrOp::CmpGe(d, b, a) },
-                )
+                Self::bin_eq(a, b, ctx, place, |s, d, a, b| if s { CmpGes(d, b, a) } else { CmpGe(d, b, a) })
             }
             Expression::Pointer(e) => {
                 let p = Self::visit_expr(e, ctx, None)?;
-                let Type::Ptr(pt) = p.ty else {
+                let Type::Ptr(_, pt) = p.ty else {
                     return Err(LoweringError::ExpectedPointerType(e.span()));
                 };
                 let place = place.unwrap_or_else(|| ctx.make_ty(&pt));
@@ -676,7 +665,7 @@ impl LoweredFunction {
             }
             Expression::Index(array, index) => {
                 let val = Self::visit_expr(array, ctx, None)?;
-                let Type::Ptr(pt) = val.ty else {
+                let Type::Ptr(_, pt) = val.ty else {
                     return Err(LoweringError::ExpectedPointerType(array.span()));
                 };
                 let idx = Self::visit_expr(index, ctx, None)?;
@@ -748,7 +737,18 @@ impl LoweredFunction {
                     return Err(LoweringError::VoidReturnType(name.span));
                 }
             }
-            _ => todo!(),
+            Expression::String(span, text) => {
+                todo!("Strings are not supported now")
+            }
+            Expression::Character(span, text) => {
+                todo!("Chars are not supported now")
+            }
+            Expression::ArrayInit(span, ex) => {
+                todo!("Array initialization is not supported now")
+            }
+            Expression::AccessName(expr, name) => {
+                todo!("Dot operators are not supported now")
+            }
         }
     }
 
@@ -780,6 +780,15 @@ impl LoweredFunction {
         place: Option<TypedValue>,
         func: impl FnOnce(Value, Value, Value) -> IrOp,
     ) -> Result<TypedValue, LoweringError> {
+        Self::typed_binary_op(a, b, ctx, place, |a, b, c, _| Ok(func(a, b, c)))
+    }
+    fn typed_binary_op(
+        a: &Expression,
+        b: &Expression,
+        ctx: &mut FuncCtx,
+        place: Option<TypedValue>,
+        func: impl FnOnce(Value, Value, Value, &Type) -> Result<IrOp, LoweringError>,
+    ) -> Result<TypedValue, LoweringError> {
         let a = Self::visit_expr(a, ctx, None)?;
         let b = Self::visit_expr(b, ctx, None)?;
         if !a.ty.type_eq(&b.ty) {
@@ -791,7 +800,7 @@ impl LoweredFunction {
         if !place.ty.type_eq(&ty) {
             return Err(LoweringError::TypesDontMatch(ty.span(), place.ty.span()));
         }
-        ctx.opcodes.push(func(place.value, a.value, b.value));
+        ctx.opcodes.push(func(place.value, a.value, b.value, &ty)?);
         ctx.kill(a.value);
         ctx.kill(b.value);
         Ok(place)
@@ -942,11 +951,13 @@ impl Initializer {
 
 #[cfg(test)]
 mod tests {
+    use crate::mylang::ast::Statement::{Var, While};
     use crate::mylang::ast::*;
     use crate::mylang::codegen::{generate_code, CodegenOptions};
     use crate::mylang::ir::{Lowered, SymbolTable};
     use crate::mylang::optimizer::{optimize_ir, OptimizerOptions};
     use crate::mylang::preproc::Span;
+    use crate::mylang::BEDROCK_CORE_CODEGEN;
     use std::time::Instant;
     use std::vec;
     use Expression::*;
@@ -956,7 +967,7 @@ mod tests {
 
     #[track_caller]
     fn ptr_ty() -> Type {
-        Type::Ptr(Box::new(Type::U16(Span::mocked_caller())))
+        Type::Ptr(Span::mocked(), Box::new(Type::U16(Span::mocked_caller())))
     }
     #[track_caller]
     fn mock_name(s: &str) -> Identifier {
@@ -1035,6 +1046,44 @@ mod tests {
                 inline: false,
                 stt: vec![Statement::Return(S, Some(var("ptr") + Box::new(Expression::Cast(ptr_ty(), num(1)))))],
             }),
+            Item::Func(FuncDef {
+                name: mock_name("collatz"),
+                ret: None,
+                args: vec![mock_arg("ptr", ptr_ty()), mock_arg("stop", U16)],
+                inline: false,
+                stt: vec![
+                    //while(n > 1){
+                    //     if(n % 2 == 0){ //for even numbers
+                    //       n = n / 2;
+                    //       printf("%d\n", n);
+                    //     }
+                    //     else{ //for odd numbers
+                    //       n = n * 3 + 1;
+                    //       printf("%d\n", n);
+                    //     }
+                    //   }
+                    Var {
+                        name: mock_name("n"),
+                        ty: Type::U16(Span::mocked_caller()),
+                        expr: Box::new(Expression::Pointer(var("ptr"))),
+                    },
+                    While {
+                        cond: Box::new(Ne(var("n"), var("stop"))),
+                        block: vec![
+                            Statement::Assign(
+                                var("ptr"),
+                                Box::new(Call(mock_name("ptr_add"), vec![*var("ptr"), *num(1)])),
+                            ),
+                            Statement::If {
+                                cond: Box::new(Eq(Box::new(And(var("n"), num(1))), num(0))),
+                                block: vec![Statement::Assign(var("n"), Box::new(Shr(var("n"), num(1))))],
+                                els: Some(vec![Statement::Assign(var("n"), var("n") * num(3) + num(1))]),
+                            },
+                            Statement::Assign(Box::new(Expression::Pointer(var("ptr"))), var("n")),
+                        ],
+                    },
+                ],
+            }),
         ];
 
         let (table, ast) = SymbolTable::scan_symbols(ast.iter()).unwrap();
@@ -1053,9 +1102,6 @@ mod tests {
         }
 
         println!("**** Generated code:");
-        let code = generate_code(
-            &lower,
-            CodegenOptions { stack_reg: 14, link_reg: 13, pc_reg: 15, temp_reg: 12, zero_reg: 0 },
-        );
+        let code = generate_code(&lower, BEDROCK_CORE_CODEGEN);
     }
 }
