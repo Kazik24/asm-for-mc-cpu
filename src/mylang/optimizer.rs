@@ -354,7 +354,9 @@ impl ValueInfo {
             for i in 0..func.opcodes.len() {
                 if let IrOp::Copy(dst, src) = func.opcodes[i] {
                     let dst_info = values.get(&dst.index).unwrap();
-                    if dst_info.writes.len() == 1 {
+                    //todo condition '&& !dst_info.return_val' needs to be cause it might result in unnecesary copy instead
+                    // of writing directly to return value
+                    if dst_info.writes.len() == 1 && !dst_info.return_val {
                         to_remove.insert(i);
                         for (idx, src_idx, _) in &dst_info.reads {
                             let value = &mut func.opcodes[*idx].vals_mut().1[*src_idx];

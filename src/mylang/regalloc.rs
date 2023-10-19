@@ -173,9 +173,15 @@ impl RegAlloc {
         Self { allocated: regs, max_hardware_regs: max_hw_regs }
     }
 
-    pub fn get_reg(&mut self, value: Value) -> Reg {
+    pub fn get_assigned(&mut self, value: Value) -> Option<Reg> {
         if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Occupied(value.index)) {
-            return Reg { num: pos as _ };
+            return Some(Reg { num: pos as _ });
+        }
+        None
+    }
+    pub fn get_reg(&mut self, value: Value) -> Reg {
+        if let Some(reg) = self.get_assigned(value) {
+            return reg;
         }
         if let Some(pos) = self.allocated.iter().position(|v| *v == RegState::Empty) {
             self.allocated[pos] = RegState::Occupied(value.index);
@@ -184,6 +190,25 @@ impl RegAlloc {
             let pos = self.allocated.len();
             self.allocated.push(RegState::Occupied(value.index));
             Reg { num: pos as _ }
+        }
+    }
+
+    pub fn claim_reg(&mut self, reg: Reg, value: Value) -> Option<()> {
+        assert!(self.get_assigned(value).is_none());
+        let idx = reg.num as usize;
+
+        if let Some(slot) = self.allocated.get_mut(idx) {
+            if *slot == RegState::Empty {
+                *slot = RegState::Occupied(value.index);
+                return Some(());
+            }
+            None
+        } else {
+            for _ in self.allocated.len()..idx {
+                self.allocated.push(RegState::Empty);
+            }
+            self.allocated.push(RegState::Occupied(value.index));
+            Some(())
         }
     }
 

@@ -1,6 +1,5 @@
 mod ast;
 mod codegen;
-mod compiler;
 mod ir;
 mod linker;
 mod optimizer;
@@ -12,14 +11,14 @@ use crate::mylang::ast::parse_ast;
 use crate::mylang::codegen::{generate_code, CodegenOptions};
 use crate::mylang::ir::{Lowered, SymbolTable};
 use crate::mylang::optimizer::{optimize_ir, OptimizerOptions};
-use crate::mylang::preproc::Span;
-pub use compiler::*;
+use crate::mylang::preproc::{Span, TextInfo};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub fn compile(main_file: &str, loader: Box<dyn SourceLoader>) -> Result<Vec<Opcode>, CompileErrors> {
     //parse source files into abstract syntax tree (AST)
     let (result, sources) = parse_ast(main_file, loader);
-    let result = result.map_err(|e| CompileErrors { errors: e.into_iter().map(|v| format!("{v:?}")).collect() })?;
+    let result = result.map_err(|e| CompileErrors { errors: e.into_iter().map(|v| format!("{v}")).collect() })?;
 
     //create symbol table and lower into intermediate representation (IR)
     let (table, ast) = SymbolTable::scan_symbols(&result).unwrap();
@@ -49,7 +48,7 @@ pub struct CompileErrors {
 }
 
 pub trait SourceLoader: Send + Sync {
-    fn load_source(&self, path: &str) -> Option<String>;
+    fn load_source(&self, path: &str) -> Option<Arc<str>>;
 }
 
 pub struct MapSourceLoader {
@@ -57,8 +56,8 @@ pub struct MapSourceLoader {
 }
 
 impl SourceLoader for MapSourceLoader {
-    fn load_source(&self, path: &str) -> Option<String> {
-        self.src.get(path).cloned()
+    fn load_source(&self, path: &str) -> Option<Arc<str>> {
+        self.src.get(path).cloned().map(|v| v.into())
     }
 }
 
@@ -87,4 +86,10 @@ pub enum LoweringError {
     ContinueOutsideLoop(Span),
     CircularConstDependency(Span),
     DuplicatedItem(Span, Span),
+}
+
+pub fn format_span_place(span: Span, text: &str, info: &TextInfo) -> String {
+    let mut s = String::new();
+
+    s
 }

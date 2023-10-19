@@ -89,12 +89,18 @@ type RegNum = u16;
 #[derive(Copy, Clone, Debug)]
 pub enum PrelinkOpcode {
     CallZ(Reg, usize), //call conditionally when reg self.1 lsb is 0
-    JmpZ(Reg, Offset),
+    JmpZ(Reg, Offset), //if reg == r0 and offset is small, use ads instruction on pc here
     Label(Label),
 
     Op(Command, Reg, Reg, RegOrConst), //Regular command, dst, regA, regB or 4 bit const
     Ex(SubCommand, Reg, Reg),          //Extension command, dst, src
     Imm(u16),
+}
+
+impl PrelinkOpcode {
+    fn mov(ctx: &CodegenCtx<'_>, dst: Reg, src: Reg) -> Self {
+        Self::Op(Command::Or, dst, src, RegOrConst::Reg(ctx.zero_reg()))
+    }
 }
 
 fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
@@ -274,7 +280,7 @@ impl CodegenCtx<'_> {
     fn load_const(&mut self, dst: Reg, value: u16) {
         let signed_val = value as i16;
         if value == 0 {
-            self.opcodes.push(PrelinkOpcode::Op(Command::Or, dst, self.zero_reg(), RegOrConst::Reg(self.zero_reg())));
+            self.opcodes.push(PrelinkOpcode::mov(self, dst, self.zero_reg()));
         } else if signed_val >= -8 && signed_val <= 7 {
             self.opcodes.push(PrelinkOpcode::Op(Command::Ads, dst, self.zero_reg(), RegOrConst::Small(value & 0xf)))
         } else {
@@ -326,6 +332,7 @@ impl CodegenCtx<'_> {
             (None, Some(bc)) => {
                 let signed_bc = bc as i16;
                 if signed_bc >= -7 && signed_bc <= 8 {
+                    let bc = (-signed_bc) as u16;
                     (Command::Add, self.regs.get_reg(a), RegOrConst::Small(bc & 0xf))
                 } else {
                     (Command::Add, self.regs.get_reg(a), RegOrConst::Reg(self.temp_const_reg(bc)))
@@ -377,26 +384,52 @@ impl CodegenCtx<'_> {
                 todo!("Multiply by varialbe is not supported yet")
             }
             (None, Some(bc)) => {
-                let src = self.get_maybe_dropped(a);
-                let dst = self.regs.get_reg(dst);
-                if !bc.is_power_of_two() || signed {
-                    if signed {
-                        todo!("Only unsigned powers of 2 are supported for now");
-                    } else {
-                        self.mul_const_unsigned(dst, src, bc);
-                    }
+                let (dst, src, _) = self.maybe_transfer_value(dst, a);
+                if signed {
+                    todo!("Only unsigned powers of 2 are supported for now");
+                } else {
+                    self.mul_const_unsigned(dst, src, bc);
                 }
-                self.shift_cmd_const(dst, src, bc, SubCommand::SetLHZ, SubCommand::Shl);
             }
             _ => unreachable!("Unoptimized multiply instruction with two constants {dst:?} {a:?} {b:?}"),
         };
     }
 
+    fn mul_unsigned(&mut self, dst: Value, a: Value, b: Value) {
+        let [a_val, b_reg] = self.copy_to_temp_reg([a, b]);
+        let dst = self.regs.get_reg(dst);
+        //dst = a_val
+        self.opcodes.push(PrelinkOpcode::mov(self, dst, a_val));
+        //zero dst if first bit of b_reg is zero
+        self.opcodes.push(PrelinkOpcode::Op(Command::Cmov, dst, self.zero_reg(), RegOrConst::Reg(b_reg)));
+
+        //label here
+        self.opcodes.push(PrelinkOpcode::Ex(SubCommand::Shr, b_reg, b_reg));
+        self.opcodes.push(PrelinkOpcode::Ex(SubCommand::Shl, a_val, a_val));
+    }
+
     fn mul_const_unsigned(&mut self, dst: Reg, src: Reg, by: u16) {
+        if by == 0 {
+            self.opcodes.push(PrelinkOpcode::mov(self, dst, self.zero_reg()));
+            return;
+        } else if by == 1 {
+            if src != dst {
+                self.opcodes.push(PrelinkOpcode::mov(self, dst, src));
+            } //else, registers are the same and mul by 1 is noop
+            return;
+        } else if by.is_power_of_two() {
+            self.shift_cmd_const(dst, src, by.trailing_zeros() as _, SubCommand::SetLHZ, SubCommand::Shl);
+            return;
+        } else if by == 3 {
+        } else if by.count_ones() == 2 {
+            todo!()
+        }
+
         let temp = self.regs.get_temp_reg();
         self.regs.drop_reg(temp);
         let mut part_reg = src;
 
+        //todo
         for mask in (0..u16::BITS).map(|v| (1 << v) as u16) {
             if by & mask != 0 {}
         }
@@ -410,18 +443,45 @@ impl CodegenCtx<'_> {
         reg
     }
 
-    fn copy_to_temp_reg(&mut self, value: Value) -> Reg {
-        if value.use_kind == UseKind::Drop {
-            let r = self.regs.get_reg(value);
-            self.regs.drop_value_reg(value);
-            r
+    /// return (dst reg, src reg, true if regs are the same)
+    fn maybe_transfer_value(&mut self, dst: Value, src: Value) -> (Reg, Reg, bool) {
+        let src_reg = self.regs.get_reg(src);
+        if src.is_drop() {
+            self.regs.drop_value_reg(src);
+            self.regs.claim_reg(src_reg, dst);
+            (src_reg, src_reg, true)
         } else {
-            let b = self.regs.get_reg(value);
-            let temp = self.regs.get_temp_reg();
-            self.opcodes.push(PrelinkOpcode::Op(Command::Or, temp, b, RegOrConst::Reg(self.zero_reg())));
-            self.regs.drop_reg(temp);
-            temp
+            (self.regs.get_reg(dst), src_reg, false)
         }
+    }
+
+    fn copy_to_temp_reg<const N: usize>(&mut self, value: [Value; N]) -> [Reg; N] {
+        assert!(N <= 3);
+        let mut result = [Reg { num: 0 }; N];
+
+        let mut to_drop = [Result::<Reg, Value>::Ok(Reg { num: 0 }); N];
+
+        for (i, value) in value.into_iter().enumerate() {
+            if value.is_drop() {
+                let r = self.regs.get_reg(value);
+                to_drop[i] = Err(value);
+                result[i] = r;
+            } else {
+                let b = self.regs.get_reg(value);
+                let temp = self.regs.get_temp_reg();
+                self.opcodes.push(PrelinkOpcode::mov(self, temp, b));
+                to_drop[i] = Ok(temp);
+                result[i] = temp;
+            }
+        }
+        for d in to_drop {
+            match d {
+                Ok(Reg { num: 0 }) => {}
+                Ok(v) => self.regs.drop_reg(v),
+                Err(v) => self.regs.drop_value_reg(v),
+            }
+        }
+        result
     }
 
     fn result_reg_with_copy(&mut self, dst: Value, value: Value) -> Reg {
@@ -433,7 +493,7 @@ impl CodegenCtx<'_> {
             let reg = self.regs.get_reg(dst);
             //todo should this be more optimized to avoid allocations when dst reg == value reg?
             let r = self.get_maybe_dropped(value);
-            self.opcodes.push(PrelinkOpcode::Op(Command::Or, reg, r, RegOrConst::Reg(self.zero_reg())));
+            self.opcodes.push(PrelinkOpcode::mov(self, reg, r));
             reg
         }
     }
@@ -445,13 +505,13 @@ impl CodegenCtx<'_> {
         if let Some(vc) = value.get_const() {
             let reg = self.regs.get_reg(dst);
             self.load_const(reg, vc);
-            let ope = self.copy_to_temp_reg(operand);
+            let [ope] = self.copy_to_temp_reg([operand]);
             (reg, ope)
         } else {
             let r = self.get_maybe_dropped(value);
             let reg = self.regs.get_reg(dst);
-            self.opcodes.push(PrelinkOpcode::Op(Command::Or, reg, r, RegOrConst::Reg(self.zero_reg())));
-            let ope = self.copy_to_temp_reg(operand);
+            self.opcodes.push(PrelinkOpcode::mov(self, reg, r));
+            let [ope] = self.copy_to_temp_reg([operand]);
             (reg, ope)
         }
     }

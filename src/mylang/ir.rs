@@ -358,7 +358,8 @@ impl LoweredFunction {
             if ctx.return_val.is_none() {
                 return Err(vec![LoweringError::FunctionMustReturnValue(ast.name.span)]);
             }
-            let last = ctx.opcodes.last().ok_or(vec![LoweringError::FunctionMustReturnValue(ast.name.span)])?;
+            let last = ctx.opcodes.iter().rev().filter(|v| !matches!(v, IrOp::Kill(_))).next();
+            let last = last.ok_or(vec![LoweringError::FunctionMustReturnValue(ast.name.span)])?;
             match last {
                 IrOp::Goto(_) => {}
                 IrOp::Return => {}
@@ -956,135 +957,73 @@ mod tests {
     use crate::mylang::codegen::{generate_code, CodegenOptions};
     use crate::mylang::ir::{Lowered, SymbolTable};
     use crate::mylang::optimizer::{optimize_ir, OptimizerOptions};
-    use crate::mylang::preproc::Span;
+    use crate::mylang::preproc::{Source, Span};
     use crate::mylang::BEDROCK_CORE_CODEGEN;
     use std::time::Instant;
     use std::vec;
     use Expression::*;
 
-    const S: Span = Span::mocked();
-    const U16: Type = Type::U16(S);
-
-    #[track_caller]
-    fn ptr_ty() -> Type {
-        Type::Ptr(Span::mocked(), Box::new(Type::U16(Span::mocked_caller())))
-    }
-    #[track_caller]
-    fn mock_name(s: &str) -> Identifier {
-        Identifier { value: s.to_string(), span: Span::mocked_caller() }
-    }
-    fn mock_arg(s: &str, ty: Type) -> Argument {
-        Argument { name: mock_name(s), ty }
-    }
-
-    fn num(val: i64) -> Box<Expression> {
-        Box::new(Number(val, false, S))
-    }
-    fn var(s: &str) -> Box<Expression> {
-        Box::new(Name(mock_name(s)))
-    }
-
     #[test]
     fn test_lowering() {
-        let ast = vec![
-            Item::Const(ConstDef { name: mock_name("C1"), ty: U16, init: Box::new(Add(num(4), var("C2"))) }),
-            Item::Const(ConstDef { name: mock_name("C2"), ty: U16, init: Box::new(Add(num(5), num(11))) }),
-            Item::Func(FuncDef {
-                name: mock_name("op_func"),
-                ret: Some(U16),
-                args: vec![mock_arg("a", U16), mock_arg("b", U16)],
-                inline: false,
-                stt: vec![
-                    Statement::If {
-                        cond: Box::new(Lo(var("a"), var("b"))), //todo type inferred here is signed
-                        els: None,
-                        block: vec![Statement::Return(S, Some(num(42)))],
-                    },
-                    Statement::Return(S, Some(Box::new(Sub(var("a"), var("b"))))),
-                ],
-            }),
-            Item::Func(FuncDef {
-                name: mock_name("test_func"),
-                ret: None,
-                args: vec![mock_arg("arg1", U16)],
-                inline: false,
-                stt: vec![
-                    Statement::Var { name: mock_name("count"), ty: U16, expr: Box::new(Add(num(0), num(1))) },
-                    Statement::Var { name: mock_name("cond"), ty: U16, expr: (num(6) + num(4)) - num(10) },
-                    Statement::While {
-                        cond: Box::new(Ne(var("count"), var("cond"))),
-                        block: vec![Statement::Assign(
-                            var("count"),
-                            Box::new(Call(mock_name("op_func"), vec![*var("count"), *num(1)])), //todo const arguments don't optimize jumps
-                        )],
-                    },
-                ],
-            }),
-            Item::Func(FuncDef {
-                name: mock_name("memcpy"),
-                ret: None,
-                args: vec![mock_arg("src", ptr_ty()), mock_arg("src_end", ptr_ty()), mock_arg("dst", ptr_ty())],
-                inline: false,
-                stt: vec![Statement::While {
-                    cond: Box::new(Expression::Ne(var("src"), var("src_end"))),
-                    block: vec![
-                        Statement::Var {
-                            name: mock_name("temp"),
-                            ty: Type::U16(Span::mocked_caller()),
-                            expr: Box::new(Expression::Pointer(var("src"))),
-                        },
-                        Statement::Assign(Box::new(Expression::Pointer(var("dst"))), var("temp")),
-                        Statement::Assign(var("src"), Box::new(Call(mock_name("ptr_add"), vec![*var("src"), *num(1)]))),
-                        Statement::Assign(var("dst"), Box::new(Call(mock_name("ptr_add"), vec![*var("dst"), *num(1)]))),
-                    ],
-                }],
-            }),
-            Item::Func(FuncDef {
-                name: mock_name("ptr_add"),
-                ret: Some(ptr_ty()),
-                args: vec![mock_arg("ptr", ptr_ty()), mock_arg("count", U16)],
-                inline: false,
-                stt: vec![Statement::Return(S, Some(var("ptr") + Box::new(Expression::Cast(ptr_ty(), num(1)))))],
-            }),
-            Item::Func(FuncDef {
-                name: mock_name("collatz"),
-                ret: None,
-                args: vec![mock_arg("ptr", ptr_ty()), mock_arg("stop", U16)],
-                inline: false,
-                stt: vec![
-                    //while(n > 1){
-                    //     if(n % 2 == 0){ //for even numbers
-                    //       n = n / 2;
-                    //       printf("%d\n", n);
-                    //     }
-                    //     else{ //for odd numbers
-                    //       n = n * 3 + 1;
-                    //       printf("%d\n", n);
-                    //     }
-                    //   }
-                    Var {
-                        name: mock_name("n"),
-                        ty: Type::U16(Span::mocked_caller()),
-                        expr: Box::new(Expression::Pointer(var("ptr"))),
-                    },
-                    While {
-                        cond: Box::new(Ne(var("n"), var("stop"))),
-                        block: vec![
-                            Statement::Assign(
-                                var("ptr"),
-                                Box::new(Call(mock_name("ptr_add"), vec![*var("ptr"), *num(1)])),
-                            ),
-                            Statement::If {
-                                cond: Box::new(Eq(Box::new(And(var("n"), num(1))), num(0))),
-                                block: vec![Statement::Assign(var("n"), Box::new(Shr(var("n"), num(1))))],
-                                els: Some(vec![Statement::Assign(var("n"), var("n") * num(3) + num(1))]),
-                            },
-                            Statement::Assign(Box::new(Expression::Pointer(var("ptr"))), var("n")),
-                        ],
-                    },
-                ],
-            }),
-        ];
+        let text = r#"
+            const C1: u16 = 4 + C2;
+            const C2: u16 = 5 + 11;
+
+            fn op_func(a: u16, b: u16) -> u16 {
+                if a < b {
+                    return 42;
+                }
+                return a - b;
+            }
+
+            fn test_func(arg1: u16){
+                var count: u16 = 0 + 1;
+                var cond: u16 = 6 + 4 - 10;
+                while count != cond {
+                    count = op_func(count, 1); //todo const arguments don't optimize jumps
+                }
+            }
+
+            fn memcpy(src: *u16, src_end: *u16, dst: *u16){
+                while src != src_end {
+                    var temp: u16 = *src;
+                    *dst = temp;
+                    //*dst = *src;
+                    src = ptr_add(src, 1);
+                    dst = ptr_add(dst, 1);
+                }
+            }
+
+            fn ptr_add(ptr: *u16, count: u16)-> *u16 {
+                return ptr + count as *u16;
+            }
+
+            fn collatz(ptr: *u16, stop: u16) {
+                var n: u16 = *ptr;
+                while n != stop {
+                    ptr = ptr_add(ptr, 2);
+                    if n & 1 == 0 {
+                        n = n >> 1;
+                    }else{
+                        n = n * 3 + 1;
+                    }
+                }
+            }
+
+            fn assigns(val: u16) -> u16{
+                var a: u16 = val;
+                var b: u16 = a;
+                var c: u16 = b;
+                var d: u16 = c;
+                return d;
+            }
+
+        "#;
+        let ast = run_parser(&Source::new_mocked(text)).unwrap().into_iter().filter_map(|v| match v {
+            ItemOrImport::Item(v) => Some(v),
+            _ => None,
+        });
+        let ast = ast.collect::<Vec<_>>();
 
         let (table, ast) = SymbolTable::scan_symbols(ast.iter()).unwrap();
         let mut lower = Lowered::lower_all(table, &ast).unwrap();

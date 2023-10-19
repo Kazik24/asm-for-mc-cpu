@@ -1,8 +1,9 @@
+use crate::mylang::SourceLoader;
 use druid::piet::TextStorage;
+use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter, Write};
 use std::panic::Location;
 use std::sync::{Arc, Mutex};
-use TokenKind::*;
 
 #[derive(Clone)]
 struct State {
@@ -12,26 +13,72 @@ struct State {
 
 #[derive(Clone)]
 pub struct SourceMap {
-    src: Arc<str>,
+    inner: Arc<Mutex<SourceMapInner>>,
+}
+#[derive(Clone)]
+pub struct Source {
+    src: Arc<(Arc<str>, TextInfo)>,
 }
 
-static GLOBAL_SOURCE: Mutex<Option<SourceMap>> = Mutex::new(None);
+struct SourceMapInner {
+    loader: Box<dyn SourceLoader>,
+    map: HashMap<String, Source>,
+}
 
 impl SourceMap {
-    pub fn get_global() -> Option<SourceMap> {
-        Option::clone(&*GLOBAL_SOURCE.lock().unwrap())
+    pub fn new(loader: Box<dyn SourceLoader>) -> Self {
+        Self { inner: Arc::new(Mutex::new(SourceMapInner { loader, map: Default::default() })) }
     }
-    pub fn global() -> SourceMap {
-        Self::get_global().unwrap()
+
+    pub fn get_source(&self, name: &str) -> Option<Source> {
+        let mut inner = self.inner.lock().unwrap_or_else(|v| v.into_inner());
+        if let Some(source) = inner.map.get(name).cloned() {
+            return Some(source);
+        }
+        let source = inner.loader.load_source(name)?;
+        let info = TextInfo::new(&source);
+        let source = Source { src: Arc::new((source, info)) };
+        inner.map.insert(name.to_string(), source.clone());
+        Some(source)
     }
-    pub fn set_global(map: SourceMap) {
-        *GLOBAL_SOURCE.lock().unwrap() = Some(map);
+
+    pub fn get_source_for(&self, span: Span) -> Option<Source> {
+        let inner = self.inner.lock().unwrap_or_else(|v| v.into_inner());
+        inner
+            .map
+            .values()
+            .find(|s| {
+                let ptr = s.as_str().as_ptr() as usize;
+                let end = ptr + s.as_str().len();
+                (ptr..end).contains(&span.start)
+            })
+            .cloned()
     }
-    pub fn set_new(src: Arc<str>) {
-        Self::set_global(SourceMap { src })
+}
+
+impl Source {
+    pub fn new_mocked(text: &str) -> Self {
+        let text: Arc<str> = text.to_string().into();
+        let info = TextInfo::new(&text);
+        Self { src: Arc::new((text, info)) }
     }
-    pub fn get_source_for(&self, span: Span) -> Option<&str> {
-        self.src.get(span.start..span.end)
+
+    pub fn as_str(&self) -> &str {
+        self.src.0.as_str()
+    }
+
+    pub fn info(&self) -> &TextInfo {
+        &self.src.1
+    }
+
+    pub fn str_for(&self, span: Span) -> Option<&str> {
+        let ptr = self.src.0.as_ptr() as usize;
+        let end = ptr + self.src.0.len();
+        if !(ptr..end).contains(&span.start) {
+            return None;
+        }
+        let offset = span.start - ptr;
+        Some(&self.src.0[offset..(offset + span.len())])
     }
 }
 
@@ -42,15 +89,6 @@ pub struct Span {
 }
 
 impl Span {
-    #[cfg(test)]
-    pub const fn mocked() -> Self {
-        Self { start: 0, end: 0 }
-    }
-    #[cfg(test)]
-    #[track_caller]
-    pub fn mocked_caller() -> Self {
-        Self { start: Location::caller().line() as _, end: 0 }
-    }
     pub fn lo(self) -> usize {
         self.start
     }
@@ -79,12 +117,14 @@ impl Span {
 
 pub struct TextInfo {
     start_ptr: usize,
+    new_lines: Vec<usize>,
     len: usize,
 }
 
 impl TextInfo {
     pub fn new(text: &str) -> Self {
-        Self { start_ptr: text.as_ptr() as usize, len: text.len() }
+        let new_lines = text.char_indices().filter(|(_, c)| *c == '\n').map(|(i, _)| i).collect();
+        Self { start_ptr: text.as_ptr() as usize, len: text.len(), new_lines }
     }
 
     pub fn try_spanned(&self, substring: &str) -> Option<Span> {
@@ -98,381 +138,28 @@ impl TextInfo {
         }
     }
 
+    pub fn start_line_col(&self, span: Span) -> (u32, u32) {
+        self.calculate_line_col(span.lo()).expect("Not part of source text")
+    }
+    pub fn end_line_col(&self, span: Span) -> (u32, u32) {
+        self.calculate_line_col(span.hi()).expect("Not part of source text")
+    }
+    fn calculate_line_col(&self, ptr: usize) -> Option<(u32, u32)> {
+        let ptr = ptr - self.start_ptr;
+        if ptr >= self.len {
+            return None;
+        }
+        let line_idx = self.new_lines.binary_search(&ptr).unwrap_or_else(|i| i);
+        let line_start = match line_idx {
+            0 => 0,
+            v => self.new_lines[v - 1] + 1,
+        };
+        assert!(line_start <= ptr);
+        Some(((line_idx + 1) as _, (ptr - line_start) as _))
+    }
+
     pub fn spanned(&self, substring: &str) -> Span {
         self.try_spanned(substring).expect("Substring is not a part of original text")
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq, Hash)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub span: Span,
-}
-
-impl Token {
-    pub fn new(kind: TokenKind, span: Span) -> Self {
-        Token { kind, span }
-    }
-    pub fn is_kind(&self, kind: TokenKind) -> bool {
-        self.kind == kind
-    }
-    pub fn is_value(&self, src: &SourceMap, value: &str) -> bool {
-        src.get_source_for(self.span) == Some(value)
-    }
-    pub fn is(&self, src: &SourceMap, kind: TokenKind, value: &str) -> bool {
-        self.is_kind(kind) && self.is_value(src, value)
-    }
-    pub fn is_special(&self, sp: KindSpec) -> bool {
-        self.is_kind(TokenKind::Special(sp))
-    }
-    pub fn is_value_char(&self, src: &SourceMap, value: char) -> bool {
-        let mut buff = [0u8; 4];
-        self.is_value(src, value.encode_utf8(&mut buff))
-    }
-}
-impl Debug for Token {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(self, f)
-    }
-}
-impl Display for Token {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.kind)?;
-        if let Some(map) = SourceMap::get_global() {
-            let src = map.get_source_for(self.span).unwrap();
-            write!(f, "[{:?}", src)?;
-            if self.kind == TokenKind::Whitespace(KindWhitespace::NewLine) {
-                for c in src.chars() {
-                    match c {
-                        '\n' => write!(f, "\\n")?,
-                        '\r' => write!(f, "\\r")?,
-                        c => write!(f, "{}", c)?,
-                    }
-                }
-                write!(f, "]")?;
-            } else {
-                write!(f, "{:?}]", src)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-#[repr(u8)]
-pub enum TokenKind {
-    Whitespace(KindWhitespace), // (<whitespace>)
-    Label(Option<KindKeyword>), // <letter> | "_" , (<label-char>)
-    NumberLiteral(KindNumber),
-    StringLiteral(bool),
-    CharLiteral(bool),
-    Comment,
-    MultilineComment,
-    Special(KindSpec), //alone special character
-    //SpecialMult, //special character followed immediately by other special character
-    EndOfStream,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-#[repr(u8)]
-pub enum KindWhitespace {
-    Regular,
-    NewLine,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-#[repr(u8)]
-pub enum KindNumber {
-    Clean,    //only digits
-    NumWithE, //only digits but is finished with 'e' or 'E'
-    Other,    //any other e.g '10u32', '123usize'
-}
-
-macro_rules! special_from_to{
-    ($($lit:literal => $name:ident),*) => {
-        #[derive(Copy,Clone,Eq,PartialEq,Debug,Hash)]
-        #[repr(u8)]
-        pub enum KindSpec{
-            $(
-            $name
-            ),*
-            ,Unknown // any other
-        }
-        impl KindSpec {
-            pub const fn from_char(c: char)->Self{
-                use KindSpec::*;
-                match c {
-                    $($lit => $name),*
-                    ,_ => Unknown, // any other
-                }
-            }
-            pub const fn to_char(self)->Option<char>{
-                use KindSpec::*;
-                match self {
-                    Unknown => None,
-                    $($name => Some($lit)),*
-                }
-            }
-            pub const fn all()->&'static [Self]{
-                &[ $(Self::$name),* ]
-            }
-        }
-    }
-}
-macro_rules! keyword_from_to{
-    ($($lit:literal => $name:ident),*) => {
-        #[derive(Copy,Clone,Eq,PartialEq,Debug,Hash)]
-        #[repr(u8)]
-        pub enum KindKeyword{
-            $($name),*
-        }
-        impl KindKeyword {
-            pub fn from_str(s: &str)->Option<Self>{
-                use KindKeyword::*;
-                match s {
-                    $($lit => Some($name)),*
-                    ,_ => None, // any other
-                }
-            }
-            pub const fn to_str(self)->&'static str{
-                use KindKeyword::*;
-                match self {
-                    $($name => $lit),*
-                }
-            }
-            pub const fn all()->&'static [Self]{
-                &[ $(Self::$name),* ]
-            }
-        }
-    }
-}
-special_from_to! {
-    '(' => LParen, ')' => RParen,// ( )
-    '{' => LBrace, '}' => RBrace,// { }
-    '[' => LBracket,']' => RBracket,// [ ]
-    '+' => Plus,'-' => Minus, // + -
-    '#' => Hash,':' => Colon,';' => Semicolon, // # : ;
-    '=' => EqSign,'<' => LoSign,'>' => GtSign, // = < >
-    '|' => Or,'&' => And,'^' => Xor,'!' => Excl, // | & ^ !
-    '*' => Asterisk,'/' => Div,'%' => Mod, // * / %
-    '.' => Dot,',' => Comma,'`' =>Grave, // . , `
-    '@' => At,'$' => Dollar, // @ $
-    '~' => Tilde,'?' => Question, // ~ ?
-    '\'' => SQuote,'"' => DQuote, // ' "
-    '\\' => Backslash // / \
-}
-keyword_from_to! {
-    "break" => Break,
-    "continue" => Continue
-}
-impl KindSpec {
-    pub const fn is_bracket(self) -> bool {
-        self.is_left_bracket() || self.is_right_bracket()
-    }
-    pub const fn is_left_bracket(self) -> bool {
-        use KindSpec::*;
-        match self {
-            LParen | LBrace | LBracket => true,
-            _ => false,
-        }
-    }
-    pub const fn is_right_bracket(self) -> bool {
-        use KindSpec::*;
-        match self {
-            RParen | RBrace | RBracket => true,
-            _ => false,
-        }
-    }
-}
-
-impl Display for KindKeyword {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.to_str())
-    }
-}
-impl Display for KindSpec {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_char(self.to_char().unwrap_or(char::REPLACEMENT_CHARACTER))
-    }
-}
-
-impl State {
-    fn next(&mut self) -> Option<char> {
-        self.src[self.index..].chars().next().map(|ch| {
-            self.index += ch.len_utf8();
-            ch
-        })
-    }
-    fn back(&mut self) {
-        let mut backing = self.src[..self.index].chars();
-        backing.next_back();
-        self.index = backing.as_str().len();
-    }
-    #[inline]
-    fn span_from(&self, start: usize) -> Span {
-        Span { start, end: self.index }
-    }
-
-    pub fn parse_next(&mut self) -> Token {
-        let start = self.index;
-        match self.next() {
-            None => self.read_end_of_stream(),
-            Some(c) => match c {
-                c if is_whitespace(c) => self.read_whitespace(start),
-                c if is_new_line(c) => self.read_new_line(start, c),
-                c if is_label_start(c) => self.read_label(start),
-                c if is_number_start(c) => self.read_number(start),
-                DOUBLE_QUOTE => self.read_quoted(start, DOUBLE_QUOTE, StringLiteral),
-                SINGLE_QUOTE => self.read_quoted(start, SINGLE_QUOTE, CharLiteral),
-                COMMENT => self.read_any_comment_or_slash(start),
-                c => self.read_special(start, c),
-            },
-        }
-    }
-
-    fn read_end_of_stream(&mut self) -> Token {
-        Token { kind: EndOfStream, span: self.span_from(self.index) }
-    }
-    fn read_whitespace(&mut self, start: usize) -> Token {
-        self.read_while(is_whitespace);
-        Token { kind: Whitespace(KindWhitespace::Regular), span: self.span_from(start) }
-    }
-    fn read_label(&mut self, start: usize) -> Token {
-        self.read_while(is_label_part);
-        Token { kind: Label(KindKeyword::from_str(&self.src[start..self.index])), span: self.span_from(start) }
-    }
-    fn read_special(&mut self, start: usize, c: char) -> Token {
-        //exactly one char
-        Token { kind: Special(KindSpec::from_char(c)), span: self.span_from(start) }
-    }
-    fn read_new_line(&mut self, start: usize, curr: char) -> Token {
-        if curr == CR {
-            match self.next() {
-                Some(LF) => {
-                    return Token {
-                        //windows line ending
-                        kind: Whitespace(KindWhitespace::NewLine),
-                        span: self.span_from(start),
-                    };
-                }
-                None => {} //dont back on eos
-                Some(_) => self.back(),
-            }
-        }
-        Token { kind: Whitespace(KindWhitespace::NewLine), span: self.span_from(start) }
-    }
-
-    fn read_number(&mut self, start: usize) -> Token {
-        self.read_while(is_number_part);
-        //todo resolve KindNumber
-        let value = &self.src[start..self.index];
-        let mut chars = value.chars();
-        let kind = match chars.next_back() {
-            Some('e' | 'E') => {
-                if chars.all(is_number_start) {
-                    KindNumber::NumWithE
-                } else {
-                    KindNumber::Other
-                }
-            }
-            Some(c) if is_number_start(c) => {
-                if chars.all(is_number_start) {
-                    KindNumber::Clean
-                } else {
-                    KindNumber::Other
-                }
-            }
-            _ => KindNumber::Other,
-        };
-        Token { kind: NumberLiteral(kind), span: self.span_from(start) }
-    }
-    fn read_quoted(&mut self, start: usize, quote: char, to_kind: impl FnOnce(bool) -> TokenKind) -> Token {
-        let mut escape = false;
-        let term = loop {
-            match self.next() {
-                None => break false,
-                Some(c) => {
-                    if !escape {
-                        if c == ESCAPE_CHAR {
-                            escape = true;
-                        } else if c == quote {
-                            break true;
-                        }
-                    } else {
-                        escape = false;
-                    }
-                }
-            }
-        };
-        return Token { kind: to_kind(term), span: self.span_from(start) };
-    }
-    fn read_any_comment_or_slash(&mut self, start: usize) -> Token {
-        match self.next() {
-            None => Token { kind: Special(KindSpec::Div), span: self.span_from(start) },
-            Some(COMMENT) => {
-                loop {
-                    match self.next() {
-                        None => break,
-                        Some(c) if is_new_line(c) => break,
-                        _ => {}
-                    }
-                }
-                self.back();
-                Token { kind: Comment, span: self.span_from(start) }
-            }
-            Some(MULTILINE_COMMENT_STAR) => {
-                let mut prev_star = false;
-                let mut prev_cr = false;
-                let mut curr;
-                loop {
-                    curr = match self.next() {
-                        None => {
-                            //self.back(); //todo check
-                            break;
-                        }
-                        Some(c) => c,
-                    };
-                    if curr == LF {
-                        if prev_cr {
-                            prev_cr = false; //no increment line cause cr already did it
-                        }
-                    } else if curr == CR {
-                        prev_cr = true;
-                    } else if is_new_line(curr) {
-                        prev_cr = false;
-                    } else {
-                        prev_cr = false;
-                    }
-                    if prev_star {
-                        if curr == COMMENT {
-                            break;
-                        }
-                        prev_star = false;
-                    } else {
-                        if curr == MULTILINE_COMMENT_STAR {
-                            prev_star = true;
-                        }
-                    }
-                }
-                Token { kind: MultilineComment, span: self.span_from(start) }
-            }
-            Some(_) => {
-                self.back();
-                Token { kind: Special(KindSpec::Div), span: self.span_from(start) }
-            }
-        }
-    }
-    fn read_while<F: Fn(char) -> bool>(&mut self, func: F) {
-        loop {
-            match self.next() {
-                None => break,
-                Some(c) if !func(c) => {
-                    self.back();
-                    break;
-                }
-                Some(_) => {}
-            }
-        }
     }
 }
 
@@ -536,29 +223,4 @@ pub fn is_exponent_spec(c: char) -> bool {
 }
 pub fn is_point_sep(c: char) -> bool {
     c == '.'
-}
-
-#[derive(Clone)]
-pub struct TokenIter {
-    state: State,
-    skip_eos: bool,
-}
-
-impl Iterator for TokenIter {
-    type Item = Token;
-    fn next(&mut self) -> Option<Self::Item> {
-        let tok = self.state.parse_next(); //always returns token, when eos - will repeat eos tokens.
-        if tok.kind == EndOfStream {
-            if self.skip_eos {
-                return None;
-            }
-            self.skip_eos = true;
-        }
-        Some(tok)
-    }
-}
-
-pub fn token_iter(src: Arc<str>, skip_eos: bool) -> TokenIter {
-    assert!(src.as_str().len() <= i32::MAX as _); //max 2G of text
-    TokenIter { state: State { index: 0, src }, skip_eos }
 }

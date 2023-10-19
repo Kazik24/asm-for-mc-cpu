@@ -2,6 +2,7 @@ use crate::mylang::preproc::*;
 use crate::mylang::SourceLoader;
 use peg::error::ExpectedSet;
 use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
 use std::mem::discriminant;
 use std::ops::{Add, Mul, Shl, Shr, Sub};
 
@@ -174,8 +175,15 @@ impl Shl for Box<Expression> {
 
 #[derive(Debug)]
 pub struct AstError {
-    span: Span,
+    reason: String,
+    span: Option<Span>,
     expected: HashSet<&'static str>,
+}
+
+impl Display for AstError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -221,7 +229,7 @@ peg::parser!(grammar parser() for str {
 
     // ************* Statements and blocks
     rule code_block(ann: &TextInfo) -> Vec<Statement>
-        = n1:$("{") list:(statement(ann)*) n2:$("}") { list }
+        = n1:$("{") _ list:(statement(ann)*) _ n2:$("}") { list }
     rule statement(ann: &TextInfo) -> Statement
         = _ b:code_block(ann) _ { Statement::Block(b) }
         / _ "var" b:binding(ann) "=" e:expression(ann) ";" _ { Statement::Var {name: b.0, ty: b.1, expr: Box::new(e)} }
@@ -232,7 +240,7 @@ peg::parser!(grammar parser() for str {
         / _ n1:$("continue") _ n2:$(";") _ { Statement::Continue(ann.spanned(n1).merge(ann.spanned(n2))) }
         / _ n1:$("break") _ n2:$(";") _ { Statement::Break(ann.spanned(n1).merge(ann.spanned(n2))) }
         / _ n1:$("return") e:expression(ann)? _ n2:$(";") _ { Statement::Return(ann.spanned(n1).merge(ann.spanned(n2)), e.map(Box::new)) }
-        / p:expression(ann) "=" v:expression(ann) { Statement::Assign(Box::new(p),Box::new(v)) }
+        / p:expression(ann) "=" v:expression(ann) ";" { Statement::Assign(Box::new(p),Box::new(v)) }
         / e:expression(ann) _ ";" _ { Statement::Expr(Box::new(e)) }
     rule if_else(ann: &TextInfo) -> Statement
         = "if" c:expression(ann) block:code_block(ann) _ els:("else" _ b:code_block(ann) _ { b })?
@@ -344,24 +352,89 @@ peg::parser!(grammar parser() for str {
     rule whitespace() = ch:$([_]) {? if is_whitespace(ch.chars().next().unwrap()) {Ok(())} else {Err("whitespace")}}
 });
 
-fn run_parser(text: &str) -> Result<Vec<ItemOrImport>, AstError> {
-    let info = TextInfo::new(text);
-    match parser::top(text, &info) {
+pub(crate) fn run_parser(source: &Source) -> Result<Vec<ItemOrImport>, AstError> {
+    let info = source.info();
+    let text = source.as_str();
+    match parser::top(text, info) {
         Ok(v) => Ok(v),
         Err(err) => Err(AstError {
-            span: info.spanned(&text[err.location.offset..err.location.offset]),
+            reason: "Syntax error".to_string(),
+            span: Some(info.spanned(&text[err.location.offset..err.location.offset])),
             expected: err.expected.tokens().collect(),
         }),
     }
 }
 
+fn generate_path(main_file: &str, imports: impl IntoIterator<Item = String>) -> String {
+    Some(main_file.to_string()).into_iter().chain(imports).collect::<Vec<_>>().join(std::path::MAIN_SEPARATOR_STR)
+}
+
 pub fn parse_ast(main_file: &str, loader: Box<dyn SourceLoader>) -> (Result<Vec<Item>, Vec<AstError>>, SourceMap) {
-    todo!()
+    let map = SourceMap::new(loader);
+    (parse_inner(main_file, &map), map)
+}
+
+fn parse_inner(main_file: &str, map: &SourceMap) -> Result<Vec<Item>, Vec<AstError>> {
+    let main = map.get_source(main_file).ok_or_else(|| {
+        vec![AstError { reason: format!("Cannot find main file '{main_file}'"), span: None, expected: HashSet::new() }]
+    })?;
+
+    let mut errors = Vec::new();
+    let mut paths = HashSet::new();
+    let items = recursive_parse(main, main_file, map, &mut errors, &mut paths);
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(items)
+}
+
+fn recursive_parse(
+    file: Source,
+    main_file: &str,
+    map: &SourceMap,
+    errors: &mut Vec<AstError>,
+    paths: &mut HashSet<String>,
+) -> Vec<Item> {
+    let maybe_items = match run_parser(&file) {
+        Ok(i) => i,
+        Err(e) => {
+            errors.push(e);
+            return vec![];
+        }
+    };
+    maybe_items
+        .into_iter()
+        .flat_map(|maybe| match maybe {
+            ItemOrImport::Item(v) => vec![v],
+            ItemOrImport::Import(import) => {
+                let path = generate_path(main_file, import.into_iter().map(|v| v.value));
+                if !paths.insert(path.clone()) {
+                    errors.push(AstError {
+                        reason: format!("File '{path}' already exists in source tree"),
+                        span: None,
+                        expected: HashSet::new(),
+                    });
+                    return vec![];
+                }
+                let Some(file) = map.get_source(&path) else {
+                    errors.push(AstError {
+                        reason: format!("Cannot find main file '{path}'"),
+                        span: None,
+                        expected: HashSet::new(),
+                    });
+                    return vec![];
+                };
+                recursive_parse(file, main_file, map, errors, paths)
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod test {
     use crate::mylang::ast::run_parser;
+    use crate::mylang::preproc::Source;
 
     #[test]
     fn test_parse_basic() {
@@ -374,7 +447,7 @@ mod test {
         }
         "#;
 
-        let src = run_parser(text).unwrap();
+        let src = run_parser(&Source::new_mocked(text)).unwrap();
 
         println!("{src:#?}");
     }
