@@ -5,10 +5,11 @@ use crate::mylang::LoweringError;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Formatter};
-use std::ops::Range;
+use std::ops::{Not, Range};
 use std::rc::Rc;
 
 pub type ConstVal = u16;
+pub const MAIN_FUNC_NAME: &str = "main";
 
 #[derive(Clone, Debug)]
 pub enum IrOp {
@@ -37,8 +38,8 @@ pub enum IrOp {
     Return,
     Label(Label),
     Kill(Value), //drop value register
-    CallVoid(usize, Vec<Value>),
-    CallValue(usize, Value, Vec<Value>),
+    CallVoid(RefIdx, Vec<Value>),
+    CallValue(RefIdx, Value, Vec<Value>),
 
     Not(Value, Value),        //dst, src
     Neg(Value, Value),        //dst, src
@@ -203,15 +204,23 @@ impl InitValue {
 
 #[derive(Debug)]
 pub struct Lowered {
-    pub functions: Vec<LoweredFunction>,
+    pub functions: HashMap<RefIdx, LoweredFunction>,
+    pub main_function: RefIdx,
     pub consts: Vec<Initializer>,
     pub symbols: SymbolTable,
 }
 #[derive(Debug)]
 pub struct SymbolTable {
     pub consts: HashMap<String, usize>,
-    pub functions: HashMap<String, usize>,
+    pub functions: HashMap<String, RefIdx>,
     pub globals: HashMap<String, usize>,
+}
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub struct RefIdx(u32);
+impl From<usize> for RefIdx {
+    fn from(value: usize) -> Self {
+        RefIdx(value.try_into().expect("cannot cast usize to u32"))
+    }
 }
 
 pub struct RefAst {
@@ -252,7 +261,7 @@ impl SymbolTable {
             return Err(errors);
         }
         let table = Self {
-            functions: functions.iter().enumerate().map(|(i, v)| (v.name.value.clone(), i)).collect(),
+            functions: functions.iter().enumerate().map(|(i, v)| (v.name.value.clone(), RefIdx(i as u32))).collect(),
             consts: consts.iter().enumerate().map(|(i, v)| (v.name.value.clone(), i)).collect(),
             globals: globals.iter().enumerate().map(|(i, v)| (v.name.value.clone(), i)).collect(),
         };
@@ -269,13 +278,20 @@ impl Lowered {
                 .iter()
                 .map(|v| Initializer { name: v.name.clone(), ty: v.ty.clone(), value: InitValue::NotResolved })
                 .collect(),
-            functions: Vec::new(),
+            functions: HashMap::new(),
             symbols: table,
+            main_function: RefIdx(0),
         };
         this.lower_constants(&ast)?;
-        for func in &ast.functions {
+        for (index, func) in ast.functions.iter().enumerate() {
             let f = LoweredFunction::lower(func, &this.symbols, &this.consts, &ast.functions)?;
-            this.functions.push(f);
+            this.functions.insert(index.into(), f);
+        }
+        let main = this.symbols.functions.get(MAIN_FUNC_NAME);
+        this.main_function = *main.ok_or_else(|| vec![LoweringError::MainFunctionNotFound])?;
+        let mf = &this.functions[&this.main_function];
+        if !mf.args.is_empty() {
+            return Err(vec![LoweringError::MainShouldHaveNoArgs(mf.name.span)]);
         }
         Ok(this)
     }
@@ -319,6 +335,8 @@ impl Lowered {
         }
         Ok(())
     }
+
+    fn garbage_collect_functions(&mut self) {}
 }
 
 impl LoweredFunction {
@@ -757,11 +775,11 @@ impl LoweredFunction {
         ctx: &mut FuncCtx,
         name: &Identifier,
         args_expr: &[Expression],
-    ) -> Result<(usize, Vec<Value>, Option<Type>), LoweringError> {
+    ) -> Result<(RefIdx, Vec<Value>, Option<Type>), LoweringError> {
         let func_idx = *ctx.symbols.functions.get(&name.value).ok_or(LoweringError::FunctionNotFound(name.span))?;
         let args = args_expr.iter().map(|expr| Self::visit_expr(expr, ctx, None));
         let args = args.collect::<Result<Vec<_>, _>>()?;
-        let func = &ctx.func_defs[func_idx];
+        let func = &ctx.func_defs[func_idx.0 as usize];
         //check arg types
         for (i, (val, ast)) in args.iter().zip(&func.args).enumerate() {
             if !val.ty.type_eq(&ast.ty) {
@@ -955,7 +973,7 @@ mod tests {
     use crate::mylang::ast::Statement::{Var, While};
     use crate::mylang::ast::*;
     use crate::mylang::codegen::{generate_code, CodegenOptions};
-    use crate::mylang::ir::{Lowered, SymbolTable};
+    use crate::mylang::ir::{Lowered, RefIdx, SymbolTable};
     use crate::mylang::optimizer::{optimize_ir, OptimizerOptions};
     use crate::mylang::preproc::{Source, Span};
     use crate::mylang::BEDROCK_CORE_CODEGEN;
@@ -968,6 +986,21 @@ mod tests {
         let text = r#"
             const C1: u16 = 4 + C2;
             const C2: u16 = 5 + 11;
+
+            fn main(){
+                op_func(1,2);
+                op_func(1,2);
+                op_func(1,2);
+                op_func(1,2);
+                test_func(3);
+                test_func(3);
+                test_func(3);
+                test_func(3);
+                memcpy(0 as *u16, 1 as *u16,1 as *u16);
+                memcpy(0 as *u16, 1 as *u16,1 as *u16);
+                memcpy(0 as *u16, 1 as *u16,1 as *u16);
+                memcpy(0 as *u16, 1 as *u16,1 as *u16);
+            }
 
             fn op_func(a: u16, b: u16) -> u16 {
                 if a < b {
@@ -988,7 +1021,6 @@ mod tests {
                 while src != src_end {
                     var temp: u16 = *src;
                     *dst = temp;
-                    //*dst = *src;
                     src = ptr_add(src, 1);
                     dst = ptr_add(dst, 1);
                 }
@@ -998,7 +1030,7 @@ mod tests {
                 return ptr + count as *u16;
             }
 
-            fn collatz(ptr: *u16, stop: u16) {
+            fn not_collatz(ptr: *u16, stop: u16) {
                 var n: u16 = *ptr;
                 while n != stop {
                     ptr = ptr_add(ptr, 2);
@@ -1007,6 +1039,7 @@ mod tests {
                     }else{
                         n = n * 3 + 1;
                     }
+                    *ptr = n;
                 }
             }
 
@@ -1018,6 +1051,17 @@ mod tests {
                 return d;
             }
 
+            fn shift(result: *u16,a: *u16, b:u16){
+                *result = *a << b;
+            }
+
+            fn fibonacci(n: u16)->u16{
+                if n < 2{
+                    return n;
+                }
+                return fibonacci(n - 1) + fibonacci(n - 2);
+            }
+
         "#;
         let ast = run_parser(&Source::new_mocked(text)).unwrap().into_iter().filter_map(|v| match v {
             ItemOrImport::Item(v) => Some(v),
@@ -1027,16 +1071,16 @@ mod tests {
 
         let (table, ast) = SymbolTable::scan_symbols(ast.iter()).unwrap();
         let mut lower = Lowered::lower_all(table, &ast).unwrap();
-        let index = 2;
-        let before_opt = lower.functions[index].opcodes.clone();
+        let index = RefIdx(3);
+        let before_opt = lower.functions[&index].opcodes.clone();
         for (i, op) in before_opt.iter().enumerate() {
             println!("{i}: {:?}", op);
         }
         println!("****** Optimize");
         let start = Instant::now();
         optimize_ir(&mut lower, OptimizerOptions::SPEED);
-        println!("****** After opt (took: {:.3?})", start.elapsed());
-        for (i, op) in lower.functions[index].opcodes.iter().enumerate() {
+        println!("****** After opt (took: {:.3?}) ({} functions)", start.elapsed(), lower.functions.len());
+        for (i, op) in lower.functions[&index].opcodes.iter().enumerate() {
             println!("{i}: {:?}", op);
         }
 

@@ -1,8 +1,9 @@
 use crate::assembler::compile_assembly;
 use crate::emulator::{Command, Opcode, SubCommand};
-use crate::mylang::ir::{IrOp, Label, Lowered, LoweredFunction};
-use crate::mylang::regalloc::{Reg, RegAlloc, UseKind, Value};
-use std::fmt::{Arguments, Debug};
+use crate::mylang::ir::{IrOp, Label, Lowered, LoweredFunction, RefIdx};
+use crate::mylang::regalloc::{Reg, RegAlloc, UseKind, Value, ZERO_REG};
+use std::collections::HashMap;
+use std::fmt::{Arguments, Debug, Formatter};
 
 #[derive(Copy, Clone)]
 pub struct CodegenOptions {
@@ -10,7 +11,6 @@ pub struct CodegenOptions {
     pub link_reg: u32,
     pub pc_reg: u32,
     pub temp_reg: u32, //for storing temporary values for opcodes, e.g some constant, or address for ram access
-    pub zero_reg: u32,
     pub argument_regs: u32,
     pub register_count: u32,
 }
@@ -18,9 +18,9 @@ pub struct CodegenOptions {
 pub fn generate_code_as_assembly(ir: &Lowered, options: CodegenOptions) -> String {
     let mut opcodes = CodeWriter::default();
 
-    let reserved_regs = [options.zero_reg, options.stack_reg, options.link_reg, options.pc_reg];
+    let reserved_regs = [ZERO_REG.num as _, options.stack_reg, options.link_reg, options.pc_reg];
 
-    for (index, func) in ir.functions.iter().enumerate() {
+    for (index, func) in ir.functions.iter() {
         let mut opcodes = Vec::new();
         let regs = RegAlloc::new(reserved_regs, [options.temp_reg], options.register_count);
         let mut ctx = CodegenCtx { regs, opcodes: &mut opcodes, config: options };
@@ -86,7 +86,7 @@ impl CodeWriter {
 pub struct LinkerDataChunk {}
 
 type RegNum = u16;
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub enum PrelinkOpcode {
     CallZ(Reg, usize), //call conditionally when reg self.1 lsb is 0
     JmpZ(Reg, Offset), //if reg == r0 and offset is small, use ads instruction on pc here
@@ -97,9 +97,56 @@ pub enum PrelinkOpcode {
     Imm(u16),
 }
 
+impl Debug for PrelinkOpcode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.format_for("", &HashMap::new()))
+    }
+}
+
 impl PrelinkOpcode {
     fn mov(ctx: &CodegenCtx<'_>, dst: Reg, src: Reg) -> Self {
-        Self::Op(Command::Or, dst, src, RegOrConst::Reg(ctx.zero_reg()))
+        Self::Op(Command::Or, dst, src, RegOrConst::Reg(ZERO_REG))
+    }
+    fn ldi(ctx: &CodegenCtx<'_>, dst: Reg, src_addr: Reg) -> Self {
+        Self::Op(Command::Movw, dst, src_addr, RegOrConst::Reg(ZERO_REG))
+    }
+    fn sti(ctx: &CodegenCtx<'_>, dst_addr: Reg, src_val: Reg) -> Self {
+        Self::Op(Command::Movw, ZERO_REG, dst_addr, RegOrConst::Reg(src_val))
+    }
+
+    fn format_for(&self, n: &str, names: &HashMap<u32, String>) -> String {
+        match self {
+            PrelinkOpcode::CallZ(reg, idx) => format!("    call    {reg:?}, func_{n}{idx}"),
+            PrelinkOpcode::JmpZ(ZERO_REG, Offset::Label(l)) => format!("    jmp     @label_{n}{}", l.index),
+            PrelinkOpcode::JmpZ(ZERO_REG, Offset::PcOffset(o)) => format!("    jmp     @pc{:+}", o),
+            PrelinkOpcode::JmpZ(r, Offset::Label(l)) => format!("    jmpz    @label_{n}{}, {r:?}", l.index),
+            PrelinkOpcode::JmpZ(r, Offset::PcOffset(o)) => format!("    jmpz    @pc{:+}, {r:?}", o),
+            PrelinkOpcode::Label(l) => format!("label_{n}{}:", l.index),
+            PrelinkOpcode::Op(Command::Or, r, a, RegOrConst::Reg(b)) if *a == ZERO_REG || *b == ZERO_REG => {
+                format!("    mov     {r:?}, {:?}", if *a == ZERO_REG { b } else { a })
+            }
+            PrelinkOpcode::Op(Command::Movw, ZERO_REG, a, RegOrConst::Reg(b)) => {
+                format!("    sti     [{a:?}], {b:?}")
+            }
+            PrelinkOpcode::Op(Command::Movw, r, a, RegOrConst::Reg(ZERO_REG)) => {
+                format!("    ldi     {r:?}, [{a:?}]")
+            }
+            PrelinkOpcode::Op(op, r, a, RegOrConst::Reg(b)) => {
+                format!("    {:<7} {r:?}, {a:?}, {b:?}", format!("{op:?}").to_lowercase())
+            }
+            PrelinkOpcode::Op(op, r, a, RegOrConst::Small(b)) => {
+                format!("    {:<7} {r:?}, {a:?}, #0b{b:04b}", format!("{op:?}").to_lowercase())
+            }
+            PrelinkOpcode::Ex(op, r, a) => format!("    {:<7} {r:?}, {a:?}", format!("{op:?}").to_lowercase()),
+            PrelinkOpcode::Imm(i) => {
+                let s = *i as i16;
+                if s < 0 {
+                    format!("    imm     0x{i:X} = {i} ({s})")
+                } else {
+                    format!("    imm     0x{i:X} = {i}")
+                }
+            }
+        }
     }
 }
 
@@ -149,7 +196,7 @@ fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
                 ctx.opcodes.push(PrelinkOpcode::Ex(SubCommand::Not, temp, reg));
                 ctx.opcodes.push(PrelinkOpcode::JmpZ(reg, Offset::Label(lab)))
             }
-            Goto(l) => ctx.opcodes.push(PrelinkOpcode::JmpZ(ctx.zero_reg(), Offset::Label(l))),
+            Goto(l) => ctx.opcodes.push(PrelinkOpcode::JmpZ(ZERO_REG, Offset::Label(l))),
             Return => {}
             Label(l) => ctx.opcodes.push(PrelinkOpcode::Label(l)),
             Kill(val) => ctx.regs.drop_value_reg(val),
@@ -169,7 +216,7 @@ fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
                     Some(ac) => ctx.temp_const_reg(ac),
                     None => ctx.get_maybe_dropped(addr),
                 };
-                ctx.opcodes.push(PrelinkOpcode::Op(Command::Movw, dst, reg, Reg(ctx.zero_reg())));
+                ctx.opcodes.push(PrelinkOpcode::ldi(ctx, dst, reg));
             }
             PtrStore(dst, value) => {
                 let mut temp1 = None;
@@ -190,7 +237,7 @@ fn generate_function(func: &LoweredFunction, ctx: &mut CodegenCtx) {
                     ctx.regs.drop_reg(t);
                 }
                 //both registers have now desired values, and are marked as unallocated, so after this op they can be assigned to other ops
-                ctx.opcodes.push(PrelinkOpcode::Op(Command::Movw, ctx.zero_reg(), dst_addr, Reg(src_val)));
+                ctx.opcodes.push(PrelinkOpcode::sti(ctx, dst_addr, src_val));
             }
         }
     }
@@ -253,10 +300,6 @@ impl CodegenCtx<'_> {
         self.opcodes.push(PrelinkOpcode::Op(cmd, dst, areg_val, breg_val));
     }
 
-    fn zero_reg(&self) -> Reg {
-        Reg { num: self.config.zero_reg as _ }
-    }
-
     fn unary_op(&mut self, dst: Value, src: Value, func: impl FnOnce(Reg, Reg, Reg) -> PrelinkOpcode) {
         assert!(src.get_const().is_none());
         let reg = self.regs.get_reg(src);
@@ -264,12 +307,12 @@ impl CodegenCtx<'_> {
             self.regs.drop_value_reg(src);
         }
         let dst = self.regs.get_reg(dst);
-        self.opcodes.push(func(dst, reg, self.zero_reg()));
+        self.opcodes.push(func(dst, reg, ZERO_REG));
     }
 
     fn temp_const_reg(&mut self, value: u16) -> Reg {
         if value == 0 {
-            return self.zero_reg();
+            return ZERO_REG;
         }
         let temp = self.regs.get_temp_reg();
         self.load_const(temp, value);
@@ -280,11 +323,11 @@ impl CodegenCtx<'_> {
     fn load_const(&mut self, dst: Reg, value: u16) {
         let signed_val = value as i16;
         if value == 0 {
-            self.opcodes.push(PrelinkOpcode::mov(self, dst, self.zero_reg()));
+            self.opcodes.push(PrelinkOpcode::mov(self, dst, ZERO_REG));
         } else if signed_val >= -8 && signed_val <= 7 {
-            self.opcodes.push(PrelinkOpcode::Op(Command::Ads, dst, self.zero_reg(), RegOrConst::Small(value & 0xf)))
+            self.opcodes.push(PrelinkOpcode::Op(Command::Ads, dst, ZERO_REG, RegOrConst::Small(value & 0xf)))
         } else {
-            self.opcodes.push(PrelinkOpcode::Ex(SubCommand::Cldi, dst, self.zero_reg()));
+            self.opcodes.push(PrelinkOpcode::Ex(SubCommand::Cldi, dst, ZERO_REG));
             self.opcodes.push(PrelinkOpcode::Imm(value));
         }
     }
@@ -323,7 +366,7 @@ impl CodegenCtx<'_> {
             }
             (Some(ac), None) => {
                 if ac == 0 {
-                    (Command::Sub, self.zero_reg(), RegOrConst::Reg(self.regs.get_reg(b)))
+                    (Command::Sub, ZERO_REG, RegOrConst::Reg(self.regs.get_reg(b)))
                 } else {
                     let temp = self.temp_const_reg(ac);
                     (Command::Sub, temp, RegOrConst::Reg(self.regs.get_reg(b)))
@@ -333,9 +376,9 @@ impl CodegenCtx<'_> {
                 let signed_bc = bc as i16;
                 if signed_bc >= -7 && signed_bc <= 8 {
                     let bc = (-signed_bc) as u16;
-                    (Command::Add, self.regs.get_reg(a), RegOrConst::Small(bc & 0xf))
+                    (Command::Ads, self.regs.get_reg(a), RegOrConst::Small(bc & 0xf))
                 } else {
-                    (Command::Add, self.regs.get_reg(a), RegOrConst::Reg(self.temp_const_reg(bc)))
+                    (Command::Sub, self.regs.get_reg(a), RegOrConst::Reg(self.temp_const_reg(bc)))
                 }
             }
             _ => unreachable!("Unoptimized sub instruction with two constants {dst:?} {a:?} {b:?}"),
@@ -401,7 +444,7 @@ impl CodegenCtx<'_> {
         //dst = a_val
         self.opcodes.push(PrelinkOpcode::mov(self, dst, a_val));
         //zero dst if first bit of b_reg is zero
-        self.opcodes.push(PrelinkOpcode::Op(Command::Cmov, dst, self.zero_reg(), RegOrConst::Reg(b_reg)));
+        self.opcodes.push(PrelinkOpcode::Op(Command::Cmov, dst, ZERO_REG, RegOrConst::Reg(b_reg)));
 
         //label here
         self.opcodes.push(PrelinkOpcode::Ex(SubCommand::Shr, b_reg, b_reg));
@@ -410,7 +453,7 @@ impl CodegenCtx<'_> {
 
     fn mul_const_unsigned(&mut self, dst: Reg, src: Reg, by: u16) {
         if by == 0 {
-            self.opcodes.push(PrelinkOpcode::mov(self, dst, self.zero_reg()));
+            self.opcodes.push(PrelinkOpcode::mov(self, dst, ZERO_REG));
             return;
         } else if by == 1 {
             if src != dst {
@@ -531,7 +574,7 @@ impl CodegenCtx<'_> {
         };
     }
 
-    fn call_void(&mut self, index: usize, args: &[Value]) {
+    fn call_void(&mut self, index: RefIdx, args: &[Value]) {
         todo!()
     }
 }

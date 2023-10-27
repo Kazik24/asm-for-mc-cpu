@@ -1,4 +1,4 @@
-use crate::mylang::ir::{ConstVal, IrOp, Label, Lowered, LoweredFunction};
+use crate::mylang::ir::{ConstVal, IrOp, Label, Lowered, LoweredFunction, RefIdx};
 use crate::mylang::regalloc::{UseKind, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -17,24 +17,38 @@ pub struct OptimizerOptions {
     pub max_loop_unroll: u32,
     /// Optimization passes count
     pub passes: u32,
+    /// If to remove unused functions/consts/statics
+    pub garbage_collect: bool,
 }
 
 impl OptimizerOptions {
-    pub const SIZE: Self =
-        Self { max_inlines_t1: 1, max_inline_ir_ops: 0, max_inlines_t2: 1, max_loop_unroll: 1, passes: 1 };
-    pub const SPEED: Self =
-        Self { max_inlines_t1: 4, max_inline_ir_ops: 32, max_inlines_t2: 16, max_loop_unroll: 16, passes: 1 };
+    pub const SIZE: Self = Self {
+        max_inlines_t1: 1,
+        max_inline_ir_ops: 0,
+        max_inlines_t2: 1,
+        max_loop_unroll: 1,
+        passes: 1,
+        garbage_collect: true,
+    };
+    pub const SPEED: Self = Self {
+        max_inlines_t1: 4,
+        max_inline_ir_ops: 32,
+        max_inlines_t2: 16,
+        max_loop_unroll: 16,
+        passes: 1,
+        garbage_collect: false,
+    };
 }
 impl OptimizerOptions {
-    fn select_to_inline(&self, func: &[LoweredFunction]) -> HashSet<usize> {
-        let func_counts = get_call_counts(func);
+    fn select_to_inline(&self, func: &HashMap<RefIdx, LoweredFunction>) -> HashSet<RefIdx> {
+        let func_counts = get_call_counts(func.values().flat_map(|v| v.opcodes.iter()));
         func_counts
             .iter()
             .filter_map(|(&idx, &count)| {
                 if count <= self.max_inlines_t1 {
                     return Some(idx);
                 }
-                let ir_len = func[idx].opcodes.iter().map(|op| match op {
+                let ir_len = func[&idx].opcodes.iter().map(|op| match op {
                     IrOp::Label(_) | IrOp::Kill(_) => 0, //don't count this opcodes
                     _ => 1,
                 });
@@ -51,13 +65,13 @@ impl OptimizerOptions {
 pub fn optimize_ir(lowered: &mut Lowered, options: OptimizerOptions) {
     for i in 0..options.passes {
         println!("Pass: {i}");
-        for func in &mut lowered.functions {
+        for (_, func) in &mut lowered.functions {
             optimize_function(func);
             assert_optimized(&mut func.opcodes);
         }
         let to_inline = options.select_to_inline(&lowered.functions);
         let list = lowered.functions.clone();
-        for func in lowered.functions.iter_mut() {
+        for (_, func) in lowered.functions.iter_mut() {
             inline_all(func, &list, &to_inline);
             println!("Inlined opcodes of {}:", func.name.value);
             for (i, v) in func.opcodes.iter().enumerate() {
@@ -65,12 +79,14 @@ pub fn optimize_ir(lowered: &mut Lowered, options: OptimizerOptions) {
             }
         }
         println!("Post inline optimization");
-        for func in &mut lowered.functions {
+        for (_, func) in &mut lowered.functions {
             optimize_function(func);
             assert_optimized(&mut func.opcodes);
         }
     }
-    //todo garbage collect unused functions
+    if options.garbage_collect {
+        garbage_collect_functions(&mut lowered.functions, lowered.main_function);
+    }
 }
 
 fn assert_optimized(opcodes: &mut [IrOp]) {
@@ -92,9 +108,8 @@ fn assert_optimized(opcodes: &mut [IrOp]) {
     }
 }
 
-fn get_call_counts(functions: &[LoweredFunction]) -> HashMap<usize, u32> {
+fn get_call_counts<'a>(opcodes: impl IntoIterator<Item = &'a IrOp>) -> HashMap<RefIdx, u32> {
     let mut calls = HashMap::new();
-    let opcodes = functions.iter().flat_map(|v| v.opcodes.iter());
     for op in opcodes {
         if let IrOp::CallVoid(idx, _) | IrOp::CallValue(idx, _, _) = op {
             let count = calls.entry(*idx).or_insert(0);
@@ -102,6 +117,20 @@ fn get_call_counts(functions: &[LoweredFunction]) -> HashMap<usize, u32> {
         }
     }
     calls
+}
+
+fn garbage_collect_functions(functions: &mut HashMap<RefIdx, LoweredFunction>, main: RefIdx) {
+    //simple mark-and-sweep algorithm
+    let mut alive = HashSet::new();
+    let mut scan_stack = vec![main];
+    while let Some(idx) = scan_stack.pop() {
+        if !alive.insert(idx) {
+            continue;
+        }
+        let discovered = get_call_counts(functions[&idx].opcodes.iter()).into_keys();
+        scan_stack.extend(discovered);
+    }
+    functions.retain(|k, _| alive.contains(k));
 }
 
 fn optimize_function(func: &mut LoweredFunction) {
@@ -575,14 +604,14 @@ fn walk_opcodes<T: Clone>(
     }
 }
 
-fn inline_all(func: &mut LoweredFunction, list: &[LoweredFunction], inlines: &HashSet<usize>) -> bool {
+fn inline_all(func: &mut LoweredFunction, list: &HashMap<RefIdx, LoweredFunction>, inlines: &HashSet<RefIdx>) -> bool {
     let label_count = LabelInfo::reindex_labels(&mut func.opcodes, 0);
     let value_count = ValueInfo::reindex_values(func, 0, None);
     println!("label_count: {label_count}, value_count: {value_count}");
 
     let calls_to_inline = func.opcodes.iter().enumerate().filter_map(|(i, op)| match op {
-        IrOp::CallVoid(idx, args) if inlines.contains(idx) => Some((i, &list[*idx], None, args.clone())),
-        IrOp::CallValue(idx, ret, args) if inlines.contains(idx) => Some((i, &list[*idx], Some(*ret), args.clone())),
+        IrOp::CallVoid(idx, args) if inlines.contains(idx) => Some((i, &list[idx], None, args.clone())),
+        IrOp::CallValue(idx, ret, args) if inlines.contains(idx) => Some((i, &list[idx], Some(*ret), args.clone())),
         _ => None,
     });
     let calls_to_inline = calls_to_inline.collect::<Vec<_>>();

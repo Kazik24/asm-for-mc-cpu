@@ -33,15 +33,8 @@ pub fn compile(main_file: &str, loader: Box<dyn SourceLoader>) -> Result<Vec<Opc
     Ok(code)
 }
 
-pub const BEDROCK_CORE_CODEGEN: CodegenOptions = CodegenOptions {
-    pc_reg: 15,
-    stack_reg: 14,
-    link_reg: 13,
-    temp_reg: 12,
-    zero_reg: 0,
-    argument_regs: 4,
-    register_count: 16,
-};
+pub const BEDROCK_CORE_CODEGEN: CodegenOptions =
+    CodegenOptions { pc_reg: 15, stack_reg: 14, link_reg: 13, temp_reg: 12, argument_regs: 4, register_count: 16 };
 
 pub struct CompileErrors {
     errors: Vec<String>,
@@ -86,6 +79,8 @@ pub enum LoweringError {
     ContinueOutsideLoop(Span),
     CircularConstDependency(Span),
     DuplicatedItem(Span, Span),
+    MainFunctionNotFound,
+    MainShouldHaveNoArgs(Span),
 }
 
 pub fn format_span_place(span: Span, text: &str, info: &TextInfo) -> String {

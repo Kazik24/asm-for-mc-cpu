@@ -146,10 +146,11 @@ enum RegState {
     Reserved,
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Reg {
     pub num: u16,
 }
+pub const ZERO_REG: Reg = Reg { num: 0 };
 
 impl Debug for Reg {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
