@@ -433,11 +433,14 @@ impl LoweredFunction {
                 ctx.opcodes.push(IrOp::JumpFalse(cond_val.value, false_lab));
                 ctx.kill(cond_val.value);
 
+                println!("If Scope: {:?}", ctx.scope.iter().map(|v| v.len()).collect::<Vec<_>>());
                 Self::visit_block(block, ctx)?;
+                println!("If Scope end: {:?}", ctx.scope.iter().map(|v| v.len()).collect::<Vec<_>>());
                 if let Some(els) = els {
                     let end_label = ctx.next_label();
                     ctx.opcodes.push(IrOp::Goto(end_label));
                     ctx.opcodes.push(IrOp::Label(false_lab));
+                    println!("Else Scope: {:?}", ctx.scope.iter().map(|v| v.len()).collect::<Vec<_>>());
                     Self::visit_block(els, ctx)?;
                     ctx.opcodes.push(IrOp::Label(end_label));
                 } else {
@@ -498,16 +501,12 @@ impl LoweredFunction {
             }
             Statement::Break(span) => {
                 let &(_, end, max_scope) = ctx.loop_stack.last().ok_or(LoweringError::BreakOutsideLoop(*span))?;
-                while ctx.scope.len() > max_scope {
-                    ctx.drop_scope();
-                }
+                ctx.rewind_scope_until(max_scope);
                 ctx.opcodes.push(IrOp::Goto(end));
             }
             Statement::Continue(span) => {
                 let &(start, _, max_scope) = ctx.loop_stack.last().ok_or(LoweringError::ContinueOutsideLoop(*span))?;
-                while ctx.scope.len() > max_scope {
-                    ctx.drop_scope();
-                }
+                ctx.rewind_scope_until(max_scope);
                 ctx.opcodes.push(IrOp::Goto(start));
             }
             Statement::Assign(place, value) => Self::visit_assign(place, ctx, value)?,
@@ -883,6 +882,20 @@ impl FuncCtx<'_> {
             self.opcodes.push(IrOp::Kill(val.value));
         }
     }
+    pub fn drop_scope_until(&mut self, max_scope: usize) {
+        while self.scope.len() > max_scope {
+            self.drop_scope();
+        }
+    }
+    pub fn rewind_scope_until(&mut self, max_scope: usize) {
+        for scope in self.scope[max_scope..].iter().rev() {
+            for (_, mut val) in scope.iter().cloned().rev() {
+                self.vals.kill_scoped(val.value); //kills scope bound values
+                val.value.use_kind = UseKind::Drop;
+                self.opcodes.push(IrOp::Kill(val.value));
+            }
+        }
+    }
     pub fn get_const(&self, name: &str) -> Option<(ConstVal, Type)> {
         self.consts
             .iter()
@@ -976,7 +989,7 @@ mod tests {
     use crate::mylang::ir::{Lowered, RefIdx, SymbolTable};
     use crate::mylang::optimizer::{optimize_ir, OptimizerOptions};
     use crate::mylang::preproc::{Source, Span};
-    use crate::mylang::BEDROCK_CORE_CODEGEN;
+    use crate::mylang::{Compiler, MapSourceLoader};
     use std::time::Instant;
     use std::vec;
     use Expression::*;
@@ -1030,14 +1043,14 @@ mod tests {
                 return ptr + count as *u16;
             }
 
-            fn not_collatz(ptr: *u16, stop: u16) {
+            fn collatz(ptr: *u16, stop: u16) {
                 var n: u16 = *ptr;
                 while n != stop {
                     ptr = ptr_add(ptr, 2);
                     if n & 1 == 0 {
                         n = n >> 1;
                     }else{
-                        n = n * 3 + 1;
+                        n = n * 2 + n + 1;
                     }
                     *ptr = n;
                 }
@@ -1055,6 +1068,47 @@ mod tests {
                 *result = *a << b;
             }
 
+            fn bubble_sort(array: *u16, len: u16) {
+                var i: u16 = 1;
+                while i < len {
+                    var key: u16 = array[i];
+                    var j: u16 = i - 1;
+
+                    while (j >= 0) & (array[j] > key) {
+                        array[j + 1] = array[j];
+                        j = j - 1;
+                    }
+                    array[j + 1] = key;
+                    i = i + 1;
+                }
+            }
+
+            fn insertion_sort(start: *u16, end: *u16){
+                var i: *u16 = ptr_add(start, 2);
+                while i < end {
+                    var key: u16 = *i;
+                    var j: *u16 = i - 2 as *u16;
+                    i = ptr_add(i, 2);
+
+                    loop {
+                        var curr: u16 = *j;
+                        if curr <= key {
+                            *ptr_add(j, 2) = curr;
+                            j = j - 2 as *u16;
+                            if end > j {
+                                continue;
+                            }
+                        }
+                        j = ptr_add(j,2);
+                        *j = key;
+                    }
+                }
+            }
+
+            fn shift_by_sth(a: u16) -> u16 {
+                return a * 4;
+            }
+
             fn fibonacci(n: u16)->u16{
                 if n < 2{
                     return n;
@@ -1063,11 +1117,8 @@ mod tests {
             }
 
         "#;
-        let ast = run_parser(&Source::new_mocked(text)).unwrap().into_iter().filter_map(|v| match v {
-            ItemOrImport::Item(v) => Some(v),
-            _ => None,
-        });
-        let ast = ast.collect::<Vec<_>>();
+        let loader = MapSourceLoader([("main".to_string(), text.to_string())].into_iter().collect());
+        let ast = parse_ast("main", Box::new(loader.clone())).0.unwrap();
 
         let (table, ast) = SymbolTable::scan_symbols(ast.iter()).unwrap();
         let mut lower = Lowered::lower_all(table, &ast).unwrap();
@@ -1085,6 +1136,6 @@ mod tests {
         }
 
         println!("**** Generated code:");
-        let code = generate_code(&lower, BEDROCK_CORE_CODEGEN);
+        let code = generate_code(&lower, CodegenOptions::BEDROCK_CORE_CODEGEN);
     }
 }

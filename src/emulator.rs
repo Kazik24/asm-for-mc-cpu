@@ -1,4 +1,3 @@
-use num_derive::*;
 use num_traits::FromPrimitive;
 use std::fmt::{Debug, Display, Formatter};
 
@@ -36,65 +35,28 @@ impl From<Opcode> for u16 {
         opc.bits
     }
 }
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, FromPrimitive)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, strum::FromRepr)]
 #[repr(u8)]
+#[rustfmt::skip]
 pub enum Command {
-    Or = 0,
-    And,
-    Xor,
-    Add,
-    Ads,
-    Sub,
-    CmpLt,
-    CmpGe,
-    CmpLts,
-    CmpGes,
-    CmpEq,
-    CmpNe,
-    Movw,
-    Cmov,
-    Cmovb,
-    Ex,
+    Or = 0, And, Xor, Add, Ads, Sub,
+    CmpLt, CmpGe, CmpLts, CmpGes, CmpEq, CmpNe,
+    Movw, Cmov, Cmovb, Ex,
 }
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, FromPrimitive)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, strum::FromRepr)]
 #[repr(u8)]
+#[rustfmt::skip]
 pub enum SubCommand {
-    Shr = 0,
-    Ashr,
-    Shl,
-    Cldi,
-    SetHLZ,
-    SetHLS,
-    SetLLZ,
-    SetLLS,
-    MLL,
-    MLH,
-    MHL,
-    MHH,
-    SetLHZ,
-    SetHHZ,
-    Not,
-    Call,
+    Shr = 0, Ashr, Shl, Cldi,
+    SetHLZ, SetHLS, SetLLZ, SetLLS,
+    MLL, MLH, MHL, MHH,
+    SetLHZ, SetHHZ, Not, Call,
 }
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, FromPrimitive)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, strum::FromRepr)]
 #[repr(u8)]
+#[rustfmt::skip]
 pub enum Arg {
-    R0 = 0,
-    R1,
-    R2,
-    R3,
-    R4,
-    R5,
-    R6,
-    R7,
-    R8,
-    R9,
-    R10,
-    R11,
-    R12,
-    R13,
-    R14,
-    R15,
+    R0 = 0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15,
 }
 impl Arg {
     pub fn signext(self) -> u16 {
@@ -130,19 +92,19 @@ impl Opcode {
         Self::par(Command::Ex, r, a, b as u16)
     }
     pub fn cmd(self) -> Command {
-        Command::from_u16(self.bits & 0xf).unwrap()
+        Command::from_repr((self.bits & 0xf) as u8).unwrap()
     }
     pub fn r(self) -> Arg {
-        Arg::from_u16((self.bits >> 4) & 0xf).unwrap()
+        Arg::from_repr(((self.bits >> 4) & 0xf) as u8).unwrap()
     }
     pub fn a(self) -> Arg {
-        Arg::from_u16((self.bits >> 8) & 0xf).unwrap()
+        Arg::from_repr(((self.bits >> 8) & 0xf) as u8).unwrap()
     }
     pub fn b(self) -> Arg {
-        Arg::from_u16((self.bits >> 12) & 0xf).unwrap()
+        Arg::from_repr(((self.bits >> 12) & 0xf) as u8).unwrap()
     }
     pub fn b_sub(self) -> SubCommand {
-        SubCommand::from_u16((self.bits >> 12) & 0xf).unwrap()
+        SubCommand::from_repr(((self.bits >> 12) & 0xf) as u8).unwrap()
     }
     pub fn bits(self) -> u16 {
         self.bits

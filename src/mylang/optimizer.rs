@@ -22,24 +22,6 @@ pub struct OptimizerOptions {
 }
 
 impl OptimizerOptions {
-    pub const SIZE: Self = Self {
-        max_inlines_t1: 1,
-        max_inline_ir_ops: 0,
-        max_inlines_t2: 1,
-        max_loop_unroll: 1,
-        passes: 1,
-        garbage_collect: true,
-    };
-    pub const SPEED: Self = Self {
-        max_inlines_t1: 4,
-        max_inline_ir_ops: 32,
-        max_inlines_t2: 16,
-        max_loop_unroll: 16,
-        passes: 1,
-        garbage_collect: false,
-    };
-}
-impl OptimizerOptions {
     fn select_to_inline(&self, func: &HashMap<RefIdx, LoweredFunction>) -> HashSet<RefIdx> {
         let func_counts = get_call_counts(func.values().flat_map(|v| v.opcodes.iter()));
         func_counts
