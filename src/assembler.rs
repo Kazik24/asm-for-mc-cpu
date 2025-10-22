@@ -34,7 +34,7 @@ fn is_label(l: &str) -> bool {
     c.all(|c| c == '_' || c.is_alphanumeric())
 }
 
-fn command_stream(text: &str) -> impl Iterator<Item = AsmCommand> {
+fn command_stream(text: &str) -> impl Iterator<Item = AsmCommand<'_>> {
     fn parse_reg(name: &str) -> Result<(u16, RegByte), ()> {
         let mut ch = name.chars();
         match ch.next() {
@@ -594,7 +594,7 @@ pub fn compile_assembly(source: &str) -> Result<Vec<Opcode>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn run_precompile(text: &str) -> Vec<Result<Precompiled, (String, Vec<AsmArgument>)>> {
+    fn run_precompile(text: &str) -> Vec<Result<Precompiled<'_>, (String, Vec<AsmArgument<'_>>)>> {
         command_stream(text)
             .map(|c| match c {
                 AsmCommand::Cmd(name, args) => precompile_command(name, args),
