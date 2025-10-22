@@ -10,7 +10,6 @@ use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 
 mod assembler;
-mod clang;
 mod emulator;
 mod gui;
 mod mylang;
